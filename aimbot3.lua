@@ -34,7 +34,7 @@ local options = {
         Hitscan = Hitbox.Head,
         Projectile = 11
     },
-    AimFov = 60,
+    AimFov = 120,
     PredTicks = 67,
     StrafePrediction = true,
     StrafeSamples = 20,
@@ -47,9 +47,10 @@ local lerp = 0
 local lastAngles = {} ---@type EulerAngles[]
 local strafeAngles = {} ---@type number[]
 local hitChance = 0
-local lastPosition = Vector3(0, 0, 0)
+local lastPosition = {}
 local vPath
 local targetFound
+
 ---@param me WPlayer
 local function CalcStrafe(me)
     local players = entities.FindByClass("CTFPlayer")
@@ -133,7 +134,7 @@ end
 local function CheckProjectileTarget(me, weapon, player)
     local projInfo = weapon:GetProjectileInfo()
     if not projInfo then return nil end
-
+    local idx = player:GetIndex()
     local speed = projInfo[1]
     local shootPos = me:GetEyePos() -- TODO: Add weapon offset
     local aimPos = player:GetAbsOrigin() + Vector3(0, 0, 10)
@@ -145,33 +146,37 @@ local function CheckProjectileTarget(me, weapon, player)
     if me:DistTo(player) > maxDistance then return nil end
 
     -- Visiblity Check
-    if not Helpers.VisPos(player:Unwrap(), shootPos, player:GetAbsOrigin()) then
-        return nil
-    end
+    if not Helpers.VisPos(player:Unwrap(), shootPos, player:GetAbsOrigin()) then return nil end
 
     -- Predict the player
     local strafeAngle = options.StrafePrediction and strafeAngles[player:GetIndex()] or nil
     local predData = Prediction.Player(player, options.PredTicks, strafeAngle)
     if not predData then return nil end
 
-    if not lastPosition then
-        lastPosition = predData.pos[1]
+    if lastPosition[idx] == nil then
+        lastPosition[idx] = predData.pos[1]
         return nil
     end
 
-    --[[hitChance = calculateHitChancePercentage(lastPosition, player:GetAbsOrigin())
-    if hitChance < options.MinHitchance then -- if target is unpredictable return nil
+    hitChance = calculateHitChancePercentage(lastPosition[idx], player:GetAbsOrigin())
+    if hitChance < options.MinHitchance then -- if target is unpredictable, don't aim
+        lastPosition[idx] = predData.pos[1]
         return nil
-    end]]
+    end
 
     local fov
     -- Find a valid prediction
-    local targetAngles = nil
     for i = 0, options.PredTicks do
         local pos = predData.pos[i] + aimOffset
 
         local solution = Math.SolveProjectile(shootPos, pos, projInfo[1], projInfo[2])
         if not solution then goto continue end
+
+        -- Calculate the fov
+        fov = Math.AngleFov(solution.angles, engine.GetViewAngles())
+        if fov > options.AimFov then
+            goto continue
+        end
 
         -- Time check
         local time = solution.time + latency + lerp
@@ -183,25 +188,20 @@ local function CheckProjectileTarget(me, weapon, player)
             goto continue
         end
 
-        -- Calculate the fov
-        fov = Math.AngleFov(solution.angles, engine.GetViewAngles())
-        if fov > options.AimFov then
-            goto continue
-        end
-
         -- The prediction is valid
         targetAngles = solution.angles
         vPath = {path = predData.pos, lengh = i}
         break
-
-        -- TODO: FOV Check
         ::continue::
     end
 
     -- We didn't find a valid prediction
     if not targetAngles then return nil end
+    lastPosition[idx] = predData.pos[1]
 
-    lastPosition = predData.pos[1]
+    --if target is too close, don't aim direction
+    if (player:GetAbsOrigin() - me:GetAbsOrigin()):Length() < 100 then return end
+
     -- The target is valid
     local target = { entity = player, angles = targetAngles, factor = fov }
     return target
@@ -273,23 +273,37 @@ end
 
 ---@param userCmd UserCmd
 local function OnCreateMove(userCmd)
-    if not input.IsButtonDown(options.AimKey) then return end ----input.IsButtonDown(options.AimKey)
+    if not input.IsButtonDown(options.AimKey) then
+        if client.GetConVar("cl_autoreload") == 0 then
+            client.Command("cl_autoreload 1", true)
+        end
+        return
+    end
 
     local me = WPlayer.GetLocal()
     if not me or not me:IsAlive() then return end
-
-    local weapon = me:GetActiveWeapon()
-    if not weapon then return end
 
     -- Calculate strafe angles (optional)
     if options.StrafePrediction then
         CalcStrafe(me)
     end
 
-    -- Check if we can shoot
-    --[[local flCurTime = globals.CurTime()
-    local canShoot = weapon:GetNextPrimaryAttack() <= flCurTime and me:GetNextAttack() <= flCurTime
-    if not canShoot then return end]]
+    local weapon = me:GetActiveWeapon()
+    if not weapon then return end
+
+    -- Check if we can shoot if not reload weapon
+    local flCurTime = globals.CurTime()
+    local canShoot = me:GetNextAttack() <= flCurTime
+    if canShoot then
+        if client.GetConVar("cl_autoreload") == 1 then
+            client.Command("cl_autoreload 0", true)
+        end
+    else
+        if client.GetConVar("cl_autoreload") == 0 then
+            client.Command("cl_autoreload 1", true)
+        end
+        return
+    end
 
     -- Get current latency
     local latIn, latOut = clientstate.GetLatencyIn(), clientstate.GetLatencyOut()
@@ -305,6 +319,7 @@ local function OnCreateMove(userCmd)
         return
     end
     targetFound = currentTarget
+  
     -- Aim at the target
     userCmd:SetViewAngles(currentTarget.angles:Unpack())
     if not options.Silent then
@@ -335,7 +350,7 @@ end
 
 local current_fps = 0
 local last_fps_check = 0
-local fps_check_interval = 16 -- check FPS every 100 frames
+local fps_check_interval = 8 -- check FPS every 100 frames
 local fps_threshold = 59 -- increase values if FPS is equal to or higher than 59
 local last_increase_frame = 0 -- last frame when values were increased
 
@@ -350,8 +365,8 @@ local function OnDraw()
         if input.IsButtonDown(options.AimKey) and targetFound then
             -- decrease values by 5 if FPS is less than 59
             if current_fps < 59 then
-                options.PredTicks = math.max(options.PredTicks - 5, 1)
-                options.StrafeSamples = math.max(options.StrafeSamples - 4, 1)
+                options.PredTicks = math.max(options.PredTicks - 1, 1)
+                options.StrafeSamples = math.max(options.StrafeSamples - 5, 4)
             end
             -- increase values every 100 frames if FPS is equal to or higher than 59 and aim key is pressed
             if current_fps >= fps_threshold and globals.FrameCount() - last_increase_frame >= 100 then
