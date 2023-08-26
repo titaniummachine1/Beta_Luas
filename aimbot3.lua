@@ -17,6 +17,7 @@ local WPlayer, WWeapon = lnxLib.TF2.WPlayer, lnxLib.TF2.WWeapon
 local Helpers = lnxLib.TF2.Helpers
 local Prediction = lnxLib.TF2.Prediction
 local Fonts = lnxLib.UI.Fonts
+local shouldHitEntity = function (e, _) return false end
 
 local Hitbox = {
     Head = 1,
@@ -26,6 +27,7 @@ local Hitbox = {
     Chest = 7
 }
 
+local vHitbox = { Vector3(-20, -20, 0), Vector3(20, 20, 80) }
 local options = {
     AimKey = KEY_LSHIFT,
     AutoShoot = true,
@@ -150,7 +152,7 @@ local function CheckProjectileTarget(me, weapon, player)
 
     -- Predict the player
     local strafeAngle = options.StrafePrediction and strafeAngles[player:GetIndex()] or nil
-    local predData = Prediction.Player(player, options.PredTicks, strafeAngle)
+    local predData = Prediction.Player(player, 1, strafeAngle)
     if not predData then return nil end
 
     if lastPosition[idx] == nil then
@@ -163,6 +165,8 @@ local function CheckProjectileTarget(me, weapon, player)
         lastPosition[idx] = predData.pos[1]
         return nil
     end
+
+    predData = Prediction.Player(player, options.PredTicks, strafeAngle)
 
     local fov
     -- Find a valid prediction
@@ -188,6 +192,9 @@ local function CheckProjectileTarget(me, weapon, player)
             goto continue
         end
 
+        local projectileCollision = engine.TraceHull(shootPos, pos, vHitbox[1], vHitbox[2], MASK_PLAYERSOLID, shouldHitEntity)
+        if not projectileCollision and projectileCollision.endpos == pos then goto continue end
+    
         -- The prediction is valid
         targetAngles = solution.angles
         vPath = {path = predData.pos, lengh = i}
