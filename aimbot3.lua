@@ -49,7 +49,7 @@ local strafeAngles = {} ---@type number[]
 local hitChance = 0
 local lastPosition = Vector3(0, 0, 0)
 local vPath
-
+local targetFound
 ---@param me WPlayer
 local function CalcStrafe(me)
     local players = entities.FindByClass("CTFPlayer")
@@ -154,11 +154,22 @@ local function CheckProjectileTarget(me, weapon, player)
     local predData = Prediction.Player(player, options.PredTicks, strafeAngle)
     if not predData then return nil end
 
+    if not lastPosition then
+        lastPosition = predData.pos[1]
+        return nil
+    end
+
+    --[[hitChance = calculateHitChancePercentage(lastPosition, player:GetAbsOrigin())
+    if hitChance < options.MinHitchance then -- if target is unpredictable return nil
+        return nil
+    end]]
+
     local fov
     -- Find a valid prediction
     local targetAngles = nil
     for i = 0, options.PredTicks do
         local pos = predData.pos[i] + aimOffset
+
         local solution = Math.SolveProjectile(shootPos, pos, projInfo[1], projInfo[2])
         if not solution then goto continue end
 
@@ -190,14 +201,7 @@ local function CheckProjectileTarget(me, weapon, player)
     -- We didn't find a valid prediction
     if not targetAngles then return nil end
 
-    if lastPosition then
-        hitChance = calculateHitChancePercentage(lastPosition, player:GetAbsOrigin())
-    end
     lastPosition = predData.pos[1]
-
-    if hitChance < options.MinHitchance then -- if target is unpredictable return nil
-        return nil
-    end
     -- The target is valid
     local target = { entity = player, angles = targetAngles, factor = fov }
     return target
@@ -269,7 +273,7 @@ end
 
 ---@param userCmd UserCmd
 local function OnCreateMove(userCmd)
-    if not input.IsButtonDown(options.AimKey) then return end
+    if not input.IsButtonDown(options.AimKey) then return end ----input.IsButtonDown(options.AimKey)
 
     local me = WPlayer.GetLocal()
     if not me or not me:IsAlive() then return end
@@ -296,8 +300,11 @@ local function OnCreateMove(userCmd)
 
     -- Get the best target
     local currentTarget = GetBestTarget(me, weapon)
-    if not currentTarget then return end
-
+    if not currentTarget then
+        targetFound = nil
+        return
+    end
+    targetFound = currentTarget
     -- Aim at the target
     userCmd:SetViewAngles(currentTarget.angles:Unpack())
     if not options.Silent then
@@ -326,15 +333,46 @@ local function convertPercentageToRGB(percentage)
     return math.max(0, math.min(255, value))
 end
 
+local current_fps = 0
+local last_fps_check = 0
+local fps_check_interval = 16 -- check FPS every 100 frames
+local fps_threshold = 59 -- increase values if FPS is equal to or higher than 59
+local last_increase_frame = 0 -- last frame when values were increased
+
+
 local function OnDraw()
+
+    -- Dynamic optymisator
+    if globals.FrameCount() % fps_check_interval == 0 then
+        current_fps = math.floor(1 / globals.FrameTime())
+        last_fps_check = globals.FrameCount()
+
+        if input.IsButtonDown(options.AimKey) and targetFound then
+            -- decrease values by 5 if FPS is less than 59
+            if current_fps < 59 then
+                options.PredTicks = math.max(options.PredTicks - 5, 1)
+                options.StrafeSamples = math.max(options.StrafeSamples - 4, 1)
+            end
+            -- increase values every 100 frames if FPS is equal to or higher than 59 and aim key is pressed
+            if current_fps >= fps_threshold and globals.FrameCount() - last_increase_frame >= 100 then
+                options.PredTicks = options.PredTicks + 1
+                options.StrafeSamples = options.StrafeSamples + 1
+                last_increase_frame = globals.FrameCount()
+            end
+        end
+    end
+
     if not options.DebugInfo then return end
 
     draw.SetFont(Fonts.Verdana)
     draw.Color(255, 255, 255, 255)
 
+    draw.Text(20, 120, "Pred Ticks: " .. options.PredTicks)
+    draw.Text(20, 140, "Strafe Samples: " .. options.StrafeSamples)
+    draw.Text(20, 160, "fps: " .. current_fps)
     -- Draw current latency and lerp
-    draw.Text(20, 140, string.format("Latency: %.2f", latency))
-    draw.Text(20, 160, string.format("Lerp: %.2f", lerp))
+    draw.Text(20, 180, string.format("Latency: %.2f", latency))
+    draw.Text(20, 200, string.format("Lerp: %.2f", lerp))
 
     local me = WPlayer.GetLocal()
     if not me or not me:IsAlive() then return end
@@ -342,14 +380,16 @@ local function OnDraw()
     local weapon = me:GetActiveWeapon()
     if not weapon then return end
 
-    -- Draw current weapon
-    draw.Text(20, 180, string.format("Weapon: %s", weapon:GetName()))
-    draw.Text(20, 200, string.format("Weapon ID: %d", weapon:GetWeaponID()))
-    draw.Text(20, 220, string.format("Weapon DefIndex: %d", weapon:GetDefIndex()))
+        -- Draw current weapon
+    draw.Text(20, 220, string.format("Weapon: %s", weapon:GetName()))
+    draw.Text(20, 240, string.format("Weapon ID: %d", weapon:GetWeaponID()))
+    draw.Text(20, 260, string.format("Weapon DefIndex: %d", weapon:GetDefIndex()))
+
+
     local greenValue = convertPercentageToRGB(hitChance)
     local blueValue = convertPercentageToRGB(hitChance)
     draw.Color(255, greenValue, blueValue, 255)
-    draw.Text(20, 240, string.format("%.2f", hitChance) .. "% Hitchance")
+    draw.Text(20, 280, string.format("%.2f", hitChance) .. "% Hitchance")
 
     -- Draw lines between the predicted positions
     if not vPath then return end
