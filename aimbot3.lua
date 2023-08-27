@@ -27,7 +27,7 @@ local Hitbox = {
     Chest = 7
 }
 
-local vHitbox = { Vector3(-20, -20, 0), Vector3(20, 20, 80) }
+local vHitbox = { Vector3(-1, -1, -1), Vector3(1, 1, 1) }
 local options = {
     AimKey = KEY_LSHIFT,
     AutoShoot = true,
@@ -138,7 +138,13 @@ local function CheckProjectileTarget(me, weapon, player)
     if not projInfo then return nil end
     local idx = player:GetIndex()
     local speed = projInfo[1]
-    local shootPos = me:GetEyePos() -- TODO: Add weapon offset
+
+    --local ProjShootOffset = Vector3(23.5, 8.0, -3.0)
+    --local destination = source + engine.GetViewAngles():Forward()
+
+    --local rotatedOffset = destination + ProjShootOffset
+
+    local shootPos = me:GetEyePos() --+ rotatedOffset -- TODO: Add weapon offset
     local aimPos = player:GetAbsOrigin() + Vector3(0, 0, 10)
     local aimOffset = aimPos - player:GetAbsOrigin()
     --local aimOffset = Vector3()
@@ -412,6 +418,14 @@ local function OnDraw()
     local blueValue = convertPercentageToRGB(hitChance)
     draw.Color(255, greenValue, blueValue, 255)
     draw.Text(20, 280, string.format("%.2f", hitChance) .. "% Hitchance")
+
+               --draw predicted local position with strafe prediction
+               local screenPos = client.WorldToScreen(me:GetEyePos() + Vector3(23.5, 8.0, -3.0))
+               if screenPos ~= nil then
+                   draw.Line( screenPos[1] + 10, screenPos[2], screenPos[1] - 10, screenPos[2])
+                   draw.Line( screenPos[1], screenPos[2] - 10, screenPos[1], screenPos[2] + 10)
+               end
+
 
     -- Draw lines between the predicted positions
     if not vPath then return end
