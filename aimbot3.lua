@@ -37,10 +37,10 @@ local options = {
         Projectile = 11
     },
     AimFov = 120,
-    PredTicks = 67,
+    PredTicks = 69,
     StrafePrediction = true,
-    StrafeSamples = 20,
-    MinHitchance = 20,
+    StrafeSamples = 2,
+    MinHitchance = 35,
     DebugInfo = true
 }
 
@@ -63,8 +63,10 @@ local function CalcStrafe(me)
             goto continue
         end
 
-        -- Ignore teammates (for now)
+        -- Ignore teammates
         if entity:GetTeamNumber() == me:GetTeamNumber() then
+            lastAngles[idx] = nil
+            strafeAngles[idx] = nil
             goto continue
         end
 
@@ -88,24 +90,129 @@ local function CalcStrafe(me)
     end
 end
 
--- Finds the best position for hitscan weapons
----@param me WPlayer
----@param weapon WWeapon
+-- Predict the position of a player
 ---@param player WPlayer
----@return AimTarget?
-local function CheckHitscanTarget(me, weapon, player)
-    -- FOV Check
-    local aimPos = player:GetHitboxPos(options.AimPos.Hitscan)
-    if not aimPos then return nil end
-    local angles = Math.PositionAngles(me:GetEyePos(), aimPos)
-    local fov = Math.AngleFov(angles, engine.GetViewAngles())
+---@param t integer
+---@param d number?
+---@param initialData { pos: Vector3, vel: Vector3, onGround: boolean }
+---@param skipTicks integer
+---@return { pos : Vector3[], vel: Vector3[], onGround: boolean[] }?
+local function OptymisedPrediction(player, t, d, skipTicks, initialData)
+    local gravity = client.GetConVar("sv_gravity")
+    local stepSize = player:GetPropFloat("localdata", "m_flStepSize")
+    if not gravity or not stepSize then return nil end
 
-    -- Visiblity Check
-    if not Helpers.VisPos(player:Unwrap(), me:GetEyePos(), aimPos) then return nil end
+    local vUp = Vector3(0, 0, 1)
+    vHitbox = { Vector3(-20, -20, 0), Vector3(20, 20, 80) }
+    local vStep = Vector3(0, 0, stepSize / 2) -- smaller step size for more precision
+    shouldHitEntity = function (e, _) return false end
 
-    -- The target is valid
-    local target = { entity = player, angles = angles, factor = fov }
-    return target
+    -- Add the current record
+    local _out = {
+        pos = { [0] = inicialdata and initialData.pos or player:GetAbsOrigin() },
+        vel = { [0] = inicialdata and initialData.vel or player:EstimateAbsVelocity() },
+        onGround = { [0] = inicialdata and initialData.onGround or player:IsOnGround() }
+    }
+
+    -- Cache math functions
+    local acos = math.acos
+    local deg = math.deg
+
+    -- Perform the prediction
+    local skipPhysics = false
+    for i = 1, t * 2 do -- increase the number of iterations for more precision
+        local lastP, lastV, lastG = _out.pos[i - 1], _out.vel[i - 1], _out.onGround[i - 1]
+
+        local pos = lastP + lastV * globals.TickInterval()
+        local vel = lastV
+        local onGround = lastG
+
+        -- Apply deviation
+        if d then
+            local ang = vel:Angles()
+            ang.y = ang.y + d
+            vel = ang:Forward() * vel:Length()
+        end
+
+        --[[ Forward collision ]]
+
+        local wallTrace = engine.TraceHull(lastP + vStep, pos + vStep, vHitbox[1], vHitbox[2], MASK_PLAYERSOLID, shouldHitEntity)
+        --DrawLine(last.p + vStep, pos + vStep)
+        if wallTrace.fraction < 1 then
+            -- We'll collide
+            local normal = wallTrace.plane
+            local angle = deg(acos(normal:Dot(vUp)))
+
+            -- Check the wall angle
+            if angle > 55 then
+                -- The wall is too steep, we'll collide
+                local dot = vel:Dot(normal)
+                vel = vel - normal * dot
+            end
+
+            pos.x, pos.y = wallTrace.endpos.x, wallTrace.endpos.y
+        end
+
+        --[[ Ground collision ]]
+
+        -- Don't step down if we're in-air
+        local downStep = vStep
+        if not onGround then downStep = Vector3() end
+
+        local groundTrace = engine.TraceHull(pos + vStep, pos - downStep, vHitbox[1], vHitbox[2], MASK_PLAYERSOLID, shouldHitEntity)
+        --DrawLine(pos + vStep, pos - downStep)
+        if groundTrace.fraction < 1 then
+            -- We'll hit the ground
+            local normal = groundTrace.plane
+            local angle = deg(acos(normal:Dot(vUp)))
+
+            -- Check the ground angle
+            if angle < 45 then
+                pos = groundTrace.endpos
+                onGround = true
+            elseif angle < 55 then
+                -- The ground is too steep, we'll slide [TODO]
+                vel.x, vel.y, vel.z = 0, 0, 0
+                onGround = false
+            else
+                -- The ground is too steep, we'll collide
+                local dot = vel:Dot(normal)
+                vel = vel - normal * dot
+                onGround = true
+            end
+
+            -- Don't apply gravity if we're on the ground
+            if onGround then vel.z = 0 end
+        else
+            -- We're in the air
+            onGround = false
+        end
+
+        -- Gravity
+        if not onGround then
+            vel.z = vel.z - gravity * globals.TickInterval()
+        end
+
+        -- Add the prediction record
+        _out.pos[i], _out.vel[i], _out.onGround[i] = pos, vel, onGround
+
+        -- Skip physics calculations for the specified number of ticks
+        if i >= skipTicks and not skipPhysics then
+            local lastPos = _out.pos[i - skipTicks]
+            local trace = engine.TraceHull(lastPos + vStep, pos + vStep, vHitbox[1], vHitbox[2], MASK_PLAYERSOLID, shouldHitEntity)
+            if trace.fraction < 1 then
+                skipPhysics = true
+                i = i - skipTicks
+            end
+        end
+
+        -- Reset skipPhysics flag
+        if skipPhysics and i % skipTicks == 0 then
+            skipPhysics = false
+        end
+    end
+
+    return _out
 end
 
 local function calculateHitChancePercentage(lastPredictedPos, currentPos)
@@ -158,7 +265,7 @@ local function CheckProjectileTarget(me, weapon, player)
 
     -- Predict the player
     local strafeAngle = options.StrafePrediction and strafeAngles[player:GetIndex()] or nil
-    local predData = Prediction.Player(player, 1, strafeAngle)
+    local predData = OptymisedPrediction(player, 1, strafeAngle, 4, nil)
     if not predData then return nil end
 
     if lastPosition[idx] == nil then
@@ -171,9 +278,11 @@ local function CheckProjectileTarget(me, weapon, player)
         lastPosition[idx] = predData.pos[1]
         return nil
     end
-
-    predData = Prediction.Player(player, options.PredTicks, strafeAngle)
-
+    
+    --Prediction.Player(player, options.PredTicks, strafeAngle)
+    local inicialtable = {predData.pos, predData.vel, predData.onGround}
+    predData = OptymisedPrediction(player, options.PredTicks, strafeAngle, 4, inicialtable)
+    local targetAngles
     local fov
     -- Find a valid prediction
     for i = 0, options.PredTicks do
@@ -217,6 +326,7 @@ local function CheckProjectileTarget(me, weapon, player)
 
     -- The target is valid
     local target = { entity = player, angles = targetAngles, factor = fov }
+    strafeAngles[player:GetIndex()] = 0 --idk why but reseting it to 0 actualy fixes
     return target
 end
 
@@ -243,13 +353,13 @@ local function CheckTarget(me, weapon, entity)
         local projType = weapon:GetWeaponProjectileType()
         if projType == 1 then
             -- Hitscan weapon
-            return CheckHitscanTarget(me, weapon, player)
+            return --CheckHitscanTarget(me, weapon, player)
         else
             -- Projectile weapon
             return CheckProjectileTarget(me, weapon, player)
         end
-    elseif weapon:IsMeleeWeapon() then
-        -- TODO: Melee Aimbot
+    --[[elseif weapon:IsMeleeWeapon() then
+        -- TODO: Melee Aimbot]]
     end
 
     return nil
@@ -370,7 +480,7 @@ local last_increase_frame = 0 -- last frame when values were increased
 
 local function OnDraw()
 
-    -- Dynamic optymisator
+    --[[ Dynamic optymisator
     if globals.FrameCount() % fps_check_interval == 0 then
         current_fps = math.floor(1 / globals.FrameTime())
         last_fps_check = globals.FrameCount()
@@ -378,8 +488,8 @@ local function OnDraw()
         if input.IsButtonDown(options.AimKey) and targetFound then
             -- decrease values by 5 if FPS is less than 59
             if current_fps < 59 then
-                options.PredTicks = math.max(options.PredTicks - 1, 1)
-                options.StrafeSamples = math.max(options.StrafeSamples - 5, 4)
+                --options.PredTicks = math.max(options.PredTicks - 1, 1)
+                --options.StrafeSamples = math.max(options.StrafeSamples - 5, 4)
             end
             -- increase values every 100 frames if FPS is equal to or higher than 59 and aim key is pressed
             if current_fps >= fps_threshold and globals.FrameCount() - last_increase_frame >= 100 then
@@ -388,7 +498,7 @@ local function OnDraw()
                 last_increase_frame = globals.FrameCount()
             end
         end
-    end
+    end]]
 
     if not options.DebugInfo then return end
 
