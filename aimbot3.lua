@@ -37,7 +37,7 @@ local options = {
         Projectile = 11
     },
     AimFov = 120,
-    PredTicks = 69,
+    PredTicks = 47,
     StrafePrediction = true,
     StrafeSamples = 2,
     MinHitchance = 35,
@@ -326,7 +326,7 @@ local function CheckProjectileTarget(me, weapon, player)
 
     -- The target is valid
     local target = { entity = player, angles = targetAngles, factor = fov }
-    strafeAngles[player:GetIndex()] = 0 --idk why but reseting it to 0 actualy fixes
+    strafeAngles[player:GetIndex()] = 0 --idk why but it works
     return target
 end
 
@@ -341,11 +341,6 @@ local function CheckTarget(me, weapon, entity)
     if entity:GetTeamNumber() == me:GetTeamNumber() then return nil end
 
     local player = WPlayer.FromEntity(entity)
-
-    -- FOV check
-    local angles = Math.PositionAngles(me:GetEyePos(), player:GetAbsOrigin())
-    local fov = Math.AngleFov(angles, engine.GetViewAngles())
-    if fov > options.AimFov then return nil end
 
     if weapon:IsShootingWeapon() then
         -- TODO: Improve this
@@ -372,17 +367,21 @@ end
 local function GetBestTarget(me, weapon)
     local players = entities.FindByClass("CTFPlayer")
     local bestTarget = nil
-    local bestFactor = math.huge
-
+    local bestFov = 360
     -- Check all players
     for _, entity in pairs(players) do
         local target = CheckTarget(me, weapon, entity)
         if not target then goto continue end
 
+        -- FOV check
+        local angles = Math.PositionAngles(me:GetEyePos(), entity:GetAbsOrigin())
+        local fov = Math.AngleFov(angles, engine.GetViewAngles())
+        if fov > options.AimFov then return nil end
+
         -- Add valid target
-        if target.factor < bestFactor then
-            bestFactor = target.factor
+        if fov <= bestFov then
             bestTarget = target
+            bestFov = fov
         end
 
         -- TODO: Continue searching
@@ -397,9 +396,6 @@ end
 ---@param userCmd UserCmd
 local function OnCreateMove(userCmd)
     if not input.IsButtonDown(options.AimKey) then
-        if client.GetConVar("cl_autoreload") == 0 then
-            client.Command("cl_autoreload 1", true)
-        end
         return
     end
 
@@ -416,7 +412,7 @@ local function OnCreateMove(userCmd)
 
     -- Check if we can shoot if not reload weapon
     local flCurTime = globals.CurTime()
-    local canShoot = me:GetNextAttack() <= flCurTime
+    --[[local canShoot = me:GetNextAttack() <= flCurTime
     if canShoot then
         if client.GetConVar("cl_autoreload") == 1 then
             client.Command("cl_autoreload 0", true)
@@ -426,7 +422,7 @@ local function OnCreateMove(userCmd)
             client.Command("cl_autoreload 1", true)
         end
         return
-    end
+    end]]
 
     -- Get current latency
     local latIn, latOut = clientstate.GetLatencyIn(), clientstate.GetLatencyOut()
