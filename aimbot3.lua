@@ -102,7 +102,7 @@ local lerp = 0
 local lastAngles = {} ---@type EulerAngles[]
 local strafeAngles = {} ---@type number[]
 local hitChance = 0
-local lastPosition = nil
+local lastPosition = {}
 local vPath = {}
 local targetFound
 
@@ -139,11 +139,89 @@ local function CalcStrafe(me)
     end
 end
 
+local M_RADPI = 180 / math.pi
+
+-- Calculates the angle needed to hit a target with a projectile
+---@param origin Vector3
+---@param dest Vector3
+---@param speed number
+---@param gravity number
+---@return { angles: EulerAngles, time : number }?
+local function SolveProjectile(origin, dest, speed, gravity)
+    local _, sv_gravity = client.GetConVar("sv_gravity")
+    local v = dest - origin
+    local v0 = speed
+    local v0_squared = v0 * v0  -- Calculate v0^2 once to avoid repeated calculations
+
+    local g = sv_gravity * gravity
+    if g == 0 then
+        return { angles = Math.PositionAngles(origin, dest), time = v:Length() / v0 }
+    end
+
+    local dx = v:Length2D()
+    local dy = v.z
+    local g_dx = g * dx  -- Precompute g * dx
+    local root_part = g * (g_dx * dx + 2 * dy * v0_squared)
+    local root = v0_squared * v0_squared - root_part
+
+    if root < 0 then return nil end
+
+    local pitch = math.atan((v0_squared - math.sqrt(root)) / g_dx)
+    local yaw = math.atan(v.y, v.x)
+
+    if pitch ~= pitch or yaw ~= yaw then return nil end  -- Inline NaN check
+
+    return { angles = EulerAngles(pitch * -M_RADPI, yaw * M_RADPI), time = dx / (math.cos(pitch) * v0) }
+end
+
+-- Assuming GetLocalPlayer() returns the local player entity object
+-- Assuming Vector3 is a 3D vector class
+
+function GetProjectileFireSetup(player, vecOffset, isAlternative, distance)
+    local eyePos = player:GetAbsOrigin() + player:GetPropVector("localdata", "m_vecViewOffset[0]")
+    local forward, right, up = player:EyeAngles():AngleVectors()
+    
+    if player:GetPropInt("m_fFlags") & FL_DUCKING then
+        vecOffset = vecOffset * 0.75
+    end
+
+    local isRight = true -- Assuming the weapon is on the right side by default
+    if isAlternative then
+        isRight = not isRight
+    end
+    
+    if not isRight then
+        vecOffset.y = -vecOffset.y
+    end
+
+    local startPos = Vector3(
+        eyePos.x + forward.x * vecOffset.x + right.x * vecOffset.y + up.x * vecOffset.z,
+        eyePos.y + forward.y * vecOffset.x + right.y * vecOffset.y + up.y * vecOffset.z,
+        eyePos.z + forward.z * vecOffset.x + right.z * vecOffset.y + up.z * vecOffset.z
+    )
+
+    local endPos = eyePos + forward * distance
+
+    return startPos, endPos
+end
+
 local function calculateHitChancePercentage(lastPredictedPos, currentPos)
+    if not lastPredictedPos then
+        print("lastPosiion is NiLL ~~!!!!")
+        return 0
+    end
+
+    print("Current Position: ", currentPos.x, currentPos.y, currentPos.z)
+    print("Last Predicted Position: ", lastPredictedPos.x, lastPredictedPos.y, lastPredictedPos.z)
 
     local horizontalDistance = math.sqrt((currentPos.x - lastPredictedPos.x)^2 + (currentPos.y - lastPredictedPos.y)^2)
-    local verticalDistanceUp = currentPos.z - lastPredictedPos.z
-    local verticalDistanceDown = lastPredictedPos.z - currentPos.z
+    print(horizontalDistance.."  horizontalDistance")
+
+    local verticalDistanceUp = currentPos.z - lastPredictedPos.z + 10
+    print(verticalDistanceUp .."  UPDistance")
+
+    local verticalDistanceDown = (lastPredictedPos.z - currentPos.z) - 10
+    print(verticalDistanceDown .."  DownDistance")
     
     -- You can adjust these values based on game's mechanics
     local maxHorizontalDistance = 16
@@ -159,6 +237,7 @@ local function calculateHitChancePercentage(lastPredictedPos, currentPos)
         return overallHitChance
     end
 end
+
 
 -- Constants
 local FORWARD_COLLISION_ANGLE = 55
@@ -194,39 +273,50 @@ local function handleGroundCollision(vel, groundTrace, vUp)
     return groundTrace.endpos, onGround
 end
 
+local shouldPredict = true
+
 -- Main function
 local function CheckProjectileTarget(me, weapon, player)
-    -- Initialization and Checks
-    local projInfo = weapon:GetProjectileInfo()
-    if not projInfo then return nil end
-    local idx = player:GetIndex()
-    local speed = projInfo[1]
-    local PredTicks = Menu.Advanced.PredTicks
+    local tick_interval = globals.TickInterval()
     local shootPos = me:GetEyePos()
     local aimPos = player:GetAbsOrigin() + Vector3(0, 0, 10)
     local aimOffset = aimPos - player:GetAbsOrigin()
-    if me:DistTo(player) > PredTicks * speed then return nil end
-    if not Helpers.VisPos(player:Unwrap(), shootPos, player:GetAbsOrigin()) then return nil end
-    local strafeAngle = Menu.Advanced.StrafePrediction and strafeAngles[player:GetIndex()] or nil
-
-    local lastP = player:GetAbsOrigin()
-    local lastV = player:EstimateAbsVelocity()
-    local lastG = player:IsOnGround()
     local gravity = client.GetConVar("sv_gravity")
     local stepSize = player:GetPropFloat("localdata", "m_flStepSize")
-    if not gravity or not stepSize then return nil end
-
+    local strafeAngle = Menu.Advanced.StrafePrediction and strafeAngles[player:GetIndex()] or nil
     local vUp = Vector3(0, 0, 1)
     vHitbox = { Vector3(-20, -20, 0), Vector3(20, 20, 80) }
     local vStep = Vector3(0, 0, stepSize / 2)
-    local targetAngles, fov
-    hitChance = 0  -- Initialize to maximum
     vPath = {}
-    local CurrPos
+    local lastP, lastV, lastG = player:GetAbsOrigin(), player:EstimateAbsVelocity(), player:IsOnGround()
+    local currpos
+
+    -- Check initial conditions
+    local projInfo = weapon:GetProjectileInfo()
+    if not projInfo or not gravity or not stepSize then return nil end
+
+    local PredTicks = Menu.Advanced.PredTicks
+    local speed = projInfo[1]
+    if me:DistTo(player) > PredTicks * speed then return nil end
+    if not Helpers.VisPos(player:Unwrap(), shootPos, player:GetAbsOrigin()) then return nil end
+
+    local targetAngles, fov
+
+    if lastPosition[player:GetIndex()] then
+        hitChance = calculateHitChancePercentage(lastPosition[player:GetIndex()], player:GetAbsOrigin())
+        print("Hit chance: ", hitChance)
+        if hitChance < Menu.Main.MinHitchance then
+            print("Setting shouldPredict to false")
+            shouldPredict = false
+        else
+            print("Setting shouldPredict to true")
+            shouldPredict = true
+        end
+    end
 
     -- Main Loop for Prediction and Projectile Calculations
     for i = 1, PredTicks * 2 do
-        local pos = lastP + lastV * globals.TickInterval()
+        local pos = lastP + lastV * tick_interval
         local vel = lastV
         local onGround = lastG
 
@@ -244,8 +334,7 @@ local function CheckProjectileTarget(me, weapon, player)
         end
 
         -- Ground Collision
-        local downStep = vStep
-        if not onGround then downStep = Vector3() end
+        local downStep = onGround and vStep or Vector3()
         local groundTrace = engine.TraceHull(pos + vStep, pos - downStep, vHitbox[1], vHitbox[2], MASK_PLAYERSOLID, shouldHitEntity)
         if groundTrace.fraction < 1 then
             pos, onGround = handleGroundCollision(vel, groundTrace, vUp)
@@ -253,24 +342,27 @@ local function CheckProjectileTarget(me, weapon, player)
             onGround = false
         end
 
-        -- Gravity
+        -- Apply gravity if not on ground
         if not onGround then
-            vel.z = vel.z - gravity * globals.TickInterval()
+            vel.z = vel.z - gravity * tick_interval
         end
 
-        -- Update lastP, lastV, lastG for the next iteration
         lastP, lastV, lastG = pos, vel, onGround
-
-        -- Store the predicted position in the predicted path table
-        table.insert(vPath, pos)
 
         -- Projectile Targeting Logic
         pos = lastP + aimOffset
+        vPath[i] = pos
+        if i == 0 or i == 1 then
+            lastPosition[player:GetIndex()] = pos
+        end
 
-        local solution = Math.SolveProjectile(shootPos, pos, projInfo[1], projInfo[2])
+        if shouldPredict == false then
+            return nil
+        end
+
+        local solution = SolveProjectile(shootPos, pos, projInfo[1], projInfo[2])
         if not solution then goto continue end
 
-        lastPosition = pos
         fov = Math.AngleFov(solution.angles, engine.GetViewAngles())
         if fov > Menu.Main.AimFov then goto continue end
 
@@ -280,27 +372,14 @@ local function CheckProjectileTarget(me, weapon, player)
 
         if not Helpers.VisPos(player:Unwrap(), shootPos, pos) then goto continue end
 
-        -- Found a Valid Target
         targetAngles = solution.angles
-
-        --[[if lastPosition == nil then
-            lastPosition = pos
-            return nil
-        end
-
-        hitChance = calculateHitChancePercentage(lastPosition, player:GetAbsOrigin())
-        if hitChance < Menu.Main.MinHitchance then -- if target is unpredictable, don't aim
-            lastPosition = pos
-            return nil
-        end]] --wil do it next time
-
         break
         ::continue::
     end
-    if not targetAngles then return nil end
 
-    -- Additional Checks and Finalization
-    if (player:GetAbsOrigin() - me:GetAbsOrigin()):Length() < 100 then return end
+    if not targetAngles or (player:GetAbsOrigin() - me:GetAbsOrigin()):Length() < 100 or not lastPosition[player:GetIndex()] then
+        return nil
+    end
 
     return { entity = player, angles = targetAngles, factor = fov }
 end
@@ -523,14 +602,14 @@ local function OnDraw()
         draw.Text(20, 280, string.format("%.2f", hitChance) .. "% Hitchance")
     end
 
-    if Menu.Visuals.VisualizeProjectile then
-    --draw predicted local position with strafe prediction
-        local screenPos = client.WorldToScreen(me:GetEyePos() + Vector3(23.5, 8.0, -3.0))
+    --[[if Menu.Visuals.VisualizeProjectile then
+    draw predicted local position with strafe prediction
+        local screenPos = client.WorldToScreen(lastPosition[1])
         if screenPos ~= nil then
             draw.Line( screenPos[1] + 10, screenPos[2], screenPos[1] - 10, screenPos[2])
             draw.Line( screenPos[1], screenPos[2] - 10, screenPos[1], screenPos[2] + 10)
         end
-    end
+    end]]
 
     if Lbox_Menu_Open == true and ImMenu.Begin("Custom Projectile Aimbot", true) then -- managing the menu
         --local menuWidth, menuHeight = 2500, 3000
@@ -565,6 +644,10 @@ local function OnDraw()
 
             ImMenu.BeginFrame(1)
             Menu.Main.AimFov = ImMenu.Slider("Fov", Menu.Main.AimFov , 0.1, 360)
+            ImMenu.EndFrame()
+
+            ImMenu.BeginFrame(1)
+            Menu.Main.MinHitchance = ImMenu.Slider("Min Hitchance", Menu.Main.MinHitchance , 1, 100)
             ImMenu.EndFrame()
 
             ImMenu.BeginFrame(1)
