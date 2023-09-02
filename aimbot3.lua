@@ -39,11 +39,12 @@ local Menu = { -- this is the config that will be loaded every time u load the s
             Projectile = Hitbox.Feet
         },
         AimFov = 60,
-        MinHitchance = 35,
+        MinHitchance = 69,
     },
 
     Advanced = {
         PredTicks = 47,
+        Hitchance_Accuracy = 3,
         StrafePrediction = true,
         StrafeSamples = 1,
         Aim_Modes = {
@@ -103,8 +104,8 @@ local lastAngles = {} ---@type EulerAngles[]
 local strafeAngles = {} ---@type number[]
 local hitChance = 0
 local lastPosition = {}
+local priorPrediction = {}
 local vPath = {}
-local targetFound
 
 ---@param me WPlayer
 local function CalcStrafe(me)
@@ -210,18 +211,11 @@ local function calculateHitChancePercentage(lastPredictedPos, currentPos)
         print("lastPosiion is NiLL ~~!!!!")
         return 0
     end
-
-    print("Current Position: ", currentPos.x, currentPos.y, currentPos.z)
-    print("Last Predicted Position: ", lastPredictedPos.x, lastPredictedPos.y, lastPredictedPos.z)
-
     local horizontalDistance = math.sqrt((currentPos.x - lastPredictedPos.x)^2 + (currentPos.y - lastPredictedPos.y)^2)
-    print(horizontalDistance.."  horizontalDistance")
 
     local verticalDistanceUp = currentPos.z - lastPredictedPos.z + 10
-    print(verticalDistanceUp .."  UPDistance")
 
     local verticalDistanceDown = (lastPredictedPos.z - currentPos.z) - 10
-    print(verticalDistanceDown .."  DownDistance")
     
     -- You can adjust these values based on game's mechanics
     local maxHorizontalDistance = 16
@@ -302,17 +296,14 @@ local function CheckProjectileTarget(me, weapon, player)
 
     local targetAngles, fov
 
-    if lastPosition[player:GetIndex()] then
-        hitChance = calculateHitChancePercentage(lastPosition[player:GetIndex()], player:GetAbsOrigin())
-        print("Hit chance: ", hitChance)
+    --[[if lastPosition[player:GetIndex()] and priorPrediction[player:GetIndex()] then
+        hitChance = calculateHitChancePercentage(lastPosition[player:GetIndex()], priorPrediction[player:GetIndex()])
         if hitChance < Menu.Main.MinHitchance then
-            print("Setting shouldPredict to false")
             shouldPredict = false
         else
-            print("Setting shouldPredict to true")
             shouldPredict = true
         end
-    end
+    end]]
 
     -- Main Loop for Prediction and Projectile Calculations
     for i = 1, PredTicks * 2 do
@@ -351,13 +342,19 @@ local function CheckProjectileTarget(me, weapon, player)
 
         -- Projectile Targeting Logic
         pos = lastP + aimOffset
-        vPath[i] = pos
-        if i == 0 or i == 1 then
-            lastPosition[player:GetIndex()] = pos
-        end
+        vPath[i] = pos --save path for visuals
+    
+        -- Hitchance check
+        if i == Menu.Advanced.Hitchance_Accuracy or i == PredTicks then
+            lastPosition[player:GetIndex()] = priorPrediction[player:GetIndex()]
+            priorPrediction[player:GetIndex()] = pos
 
-        if shouldPredict == false then
-            return nil
+            hitChance = calculateHitChancePercentage(lastPosition[player:GetIndex()], priorPrediction[player:GetIndex()])
+            shouldPredict = hitChance >= Menu.Main.MinHitchance
+
+            if not shouldPredict then
+                return nil
+            end
         end
 
         local solution = SolveProjectile(shootPos, pos, projInfo[1], projInfo[2])
@@ -381,7 +378,7 @@ local function CheckProjectileTarget(me, weapon, player)
         return nil
     end
 
-    return { entity = player, angles = targetAngles, factor = fov }
+    return { entity = player, angles = targetAngles, factor = fov, Prediction = vPath[#vPath] }
 end
 
 
@@ -416,38 +413,45 @@ local function CheckTarget(me, weapon, entity)
     return nil
 end
 
--- Returns the best target for the given weapon
----@param me WPlayer
----@param weapon WWeapon
----@return AimTarget? target
 local function GetBestTarget(me, weapon)
     local players = entities.FindByClass("CTFPlayer")
     local bestTarget = nil
     local bestFov = 360
-    -- Check all players
-    for _, entity in pairs(players) do
-        local target = CheckTarget(me, weapon, entity)
-        if not target then goto continue end
+    if #players == 1 then return nil end
 
-        -- FOV check
-        local angles = Math.PositionAngles(me:GetEyePos(), entity:GetAbsOrigin())
-        local fov = Math.AngleFov(angles, engine.GetViewAngles())
-        if fov > Menu.Main.AimFov then return nil end
-
-        -- Add valid target
-        if fov <= bestFov then
-            bestTarget = target
-            bestFov = fov
+    for _, player in pairs(players) do
+        if player == nil or not player:IsAlive()
+        or player:IsDormant()
+        or not Helpers.VisPos(player, me:GetAbsOrigin(), player:GetAbsOrigin())
+        or player == me or player:GetTeamNumber() == me:GetTeamNumber()
+        or gui.GetValue("ignore cloaked") == 1 and player:InCond(4) then
+            goto continue
         end
 
-        -- TODO: Continue searching
-        break
+        local angles = Math.PositionAngles(me:GetAbsOrigin(), player:GetAbsOrigin())
+        local fov = Math.AngleFov(angles, engine.GetViewAngles())
+        
+        if fov > Menu.Main.AimFov then
+            goto continue
+        end
+
+        if fov <= bestFov then
+            bestTarget = player
+            bestFov = fov
+        end
 
         ::continue::
     end
 
+    if bestTarget then
+        bestTarget = CheckTarget(me, weapon, bestTarget)
+    else
+        return nil
+    end
+    
     return bestTarget
 end
+
 
 ---@param userCmd UserCmd
 local function OnCreateMove(userCmd)
@@ -467,7 +471,7 @@ local function OnCreateMove(userCmd)
     if not weapon then return end
 
     -- Check if we can shoot if not reload weapon
-    local flCurTime = globals.CurTime()
+    --local flCurTime = globals.CurTime()
     --[[local canShoot = me:GetNextAttack() <= flCurTime
     if canShoot then
         if client.GetConVar("cl_autoreload") == 1 then
@@ -489,12 +493,17 @@ local function OnCreateMove(userCmd)
 
     -- Get the best target
     local currentTarget = GetBestTarget(me, weapon)
-    if not currentTarget then
-        targetFound = nil
+    if currentTarget == nil then
         return
     end
-    targetFound = currentTarget
-  
+
+    --[[validate aimpos
+
+    local angles = Math.PositionAngles(me:GetAbsOrigin(), currentTarget.Prediction)
+    local fov = Math.AngleFov(angles, currentTarget.angles)
+    
+    if fov > 20 then return nil end -- skip if shooting random stuff]] 
+
     -- Aim at the target
     userCmd:SetViewAngles(currentTarget.angles:Unpack())
     if not Menu.Main.Silent then
@@ -503,6 +512,8 @@ local function OnCreateMove(userCmd)
 
     -- Auto Shoot
     if Menu.Main.AutoShoot then
+        if currentTarget == nil then return end
+
         if weapon:GetWeaponID() == TF_WEAPON_COMPOUND_BOW
         or weapon:GetWeaponID() == TF_WEAPON_PIPEBOMBLAUNCHER then
             -- Huntsman
@@ -516,6 +527,8 @@ local function OnCreateMove(userCmd)
             userCmd.buttons = userCmd.buttons | IN_ATTACK
         end
     end
+    currentTarget = nil
+    targetFound = nil
 end
 
 local function convertPercentageToRGB(percentage)
@@ -535,7 +548,7 @@ local function OnDraw()
     draw.SetFont(Fonts.Verdana)
     draw.Color(255, 255, 255, 255)
 
-    if input.IsButtonPressed( KEY_END ) or input.IsButtonPressed( KEY_INSERT ) or input.IsButtonPressed( KEY_F11 ) then 
+    if input.IsButtonPressed( KEY_INSERT )then
         toggleMenu()
     end
     --[[ Dynamic optymisator
@@ -601,7 +614,7 @@ local function OnDraw()
         draw.Color(255, greenValue, blueValue, 255)
         draw.Text(20, 280, string.format("%.2f", hitChance) .. "% Hitchance")
     end
-
+    
     --[[if Menu.Visuals.VisualizeProjectile then
     draw predicted local position with strafe prediction
         local screenPos = client.WorldToScreen(lastPosition[1])
@@ -635,7 +648,7 @@ local function OnDraw()
 
         if Menu.tabs.Main == true then
             ImMenu.BeginFrame(1)
-            ImMenu.Text("The menu keys are INSERT, END and F11")
+            ImMenu.Text("The menu keys is INSERT")
             ImMenu.EndFrame()
 
             ImMenu.BeginFrame(1)
@@ -660,12 +673,18 @@ local function OnDraw()
             ImMenu.EndFrame()]]
         end
 
-        --[[if Menu.tabs.Advanced == true then
+        if Menu.tabs.Advanced == true then
+
             ImMenu.BeginFrame(1)
+            Menu.Advanced.Hitchance_Accuracy = ImMenu.Slider("Accuracy", Menu.Advanced.Hitchance_Accuracy , 1, Menu.Advanced.PredTicks)
+            ImMenu.EndFrame()
+
+            --[[ImMenu.BeginFrame(1)
             ImMenu.Text("Aim Mode")
             Menu.Advanced.Aim_Modes.projectiles = ImMenu.Option(Menu.Advanced.Aim_Modes.projectiles, AimModes)
-            ImMenu.EndFrame()
-        end]]
+            ImMenu.EndFrame()]]
+        end
+
         ImMenu.End()
     end
 end
