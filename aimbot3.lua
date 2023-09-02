@@ -46,6 +46,7 @@ local Menu = { -- this is the config that will be loaded every time u load the s
         PredTicks = 47,
         Hitchance_Accuracy = 3,
         StrafePrediction = true,
+        CollisionCalculations = true, -- this is for the collision calculations
         StrafeSamples = 1,
         Aim_Modes = {
             Leading = true,
@@ -92,12 +93,13 @@ assert(lnxLib.GetVersion() >= 0.987, "lnxLib version is too old, please update i
 local Math, Conversion = lnxLib.Utils.Math, lnxLib.Utils.Conversion
 local WPlayer, WWeapon = lnxLib.TF2.WPlayer, lnxLib.TF2.WWeapon
 local Helpers = lnxLib.TF2.Helpers
+local KeyHelper, Input, Timer = lnxLib.Utils.KeyHelper, lnxLib.Utils.Input, lnxLib.Utils.Timer
 local Prediction = lnxLib.TF2.Prediction
 local Fonts = lnxLib.UI.Fonts
 local shouldHitEntity = function (e, _) return false end
 
+local MouseHelper = KeyHelper.new(MOUSE_LEFT)
 local vHitbox = { Vector3(-1, -1, -1), Vector3(1, 1, 1) }
-
 local latency = 0
 local lerp = 0
 local lastAngles = {} ---@type EulerAngles[]
@@ -106,6 +108,7 @@ local hitChance = 0
 local lastPosition = {}
 local priorPrediction = {}
 local vPath = {}
+local GCMD
 
 ---@param me WPlayer
 local function CalcStrafe(me)
@@ -268,6 +271,7 @@ local function handleGroundCollision(vel, groundTrace, vUp)
 end
 
 local shouldPredict = true
+local MouseClick = MouseHelper:Pressed()
 
 -- Main function
 local function CheckProjectileTarget(me, weapon, player)
@@ -304,7 +308,6 @@ local function CheckProjectileTarget(me, weapon, player)
             shouldPredict = true
         end
     end]]
-
     -- Main Loop for Prediction and Projectile Calculations
     for i = 1, PredTicks * 2 do
         local pos = lastP + lastV * tick_interval
@@ -318,19 +321,21 @@ local function CheckProjectileTarget(me, weapon, player)
             vel = ang:Forward() * vel:Length()
         end
 
-        -- Forward Collision
-        local wallTrace = engine.TraceHull(lastP + vStep, pos + vStep, vHitbox[1], vHitbox[2], MASK_PLAYERSOLID, shouldHitEntity)
-        if wallTrace.fraction < 1 then
-            pos.x, pos.y = handleForwardCollision(vel, wallTrace, vUp)
-        end
+        if Menu.Advanced.CollisionCalculations == true then
+            -- Forward Collision
+            local wallTrace = engine.TraceHull(lastP + vStep, pos + vStep, vHitbox[1], vHitbox[2], MASK_PLAYERSOLID, shouldHitEntity)
+            if wallTrace.fraction < 1 then
+                pos.x, pos.y = handleForwardCollision(vel, wallTrace, vUp)
+            end
 
-        -- Ground Collision
-        local downStep = onGround and vStep or Vector3()
-        local groundTrace = engine.TraceHull(pos + vStep, pos - downStep, vHitbox[1], vHitbox[2], MASK_PLAYERSOLID, shouldHitEntity)
-        if groundTrace.fraction < 1 then
-            pos, onGround = handleGroundCollision(vel, groundTrace, vUp)
-        else
-            onGround = false
+            -- Ground Collision
+            local downStep = onGround and vStep or Vector3()
+            local groundTrace = engine.TraceHull(pos + vStep, pos - downStep, vHitbox[1], vHitbox[2], MASK_PLAYERSOLID, shouldHitEntity)
+            if groundTrace.fraction < 1 then
+                pos, onGround = handleGroundCollision(vel, groundTrace, vUp)
+            else
+                onGround = false
+            end
         end
 
         -- Apply gravity if not on ground
@@ -344,18 +349,32 @@ local function CheckProjectileTarget(me, weapon, player)
         pos = lastP + aimOffset
         vPath[i] = pos --save path for visuals
     
-        -- Hitchance check
-        if i == Menu.Advanced.Hitchance_Accuracy or i == PredTicks then
-            lastPosition[player:GetIndex()] = priorPrediction[player:GetIndex()]
-            priorPrediction[player:GetIndex()] = pos
+        if Menu.Main.AutoShoot == true then
+            -- Hitchance check
+            if i == Menu.Advanced.Hitchance_Accuracy then
+                lastPosition[player:GetIndex()] = priorPrediction[player:GetIndex()]
+                priorPrediction[player:GetIndex()] = pos
 
-            hitChance = calculateHitChancePercentage(lastPosition[player:GetIndex()], priorPrediction[player:GetIndex()])
-            shouldPredict = hitChance >= Menu.Main.MinHitchance
+                hitChance = calculateHitChancePercentage(lastPosition[player:GetIndex()], priorPrediction[player:GetIndex()])
+                shouldPredict = hitChance >= Menu.Main.MinHitchance
 
-            if not shouldPredict then
-                return nil
+                if not shouldPredict then
+                    return nil
+                end
+            end
+        else 
+            if i == Menu.Advanced.Hitchance_Accuracy then
+                lastPosition[player:GetIndex()] = priorPrediction[player:GetIndex()]
+                priorPrediction[player:GetIndex()] = pos
+
+                if not input.IsButtonDown(MOUSE_LEFT) then
+                    return nil
+                end
             end
         end
+
+        
+
 
         local solution = SolveProjectile(shootPos, pos, projInfo[1], projInfo[2])
         if not solution then goto continue end
@@ -375,6 +394,10 @@ local function CheckProjectileTarget(me, weapon, player)
     end
 
     if not targetAngles or (player:GetAbsOrigin() - me:GetAbsOrigin()):Length() < 100 or not lastPosition[player:GetIndex()] then
+        return nil
+    end
+
+    if Menu.Main.AutoShoot == false and input.IsButtonDown(MOUSE_LEFT) == false then
         return nil
     end
 
@@ -458,6 +481,7 @@ local function OnCreateMove(userCmd)
     if not input.IsButtonDown(Menu.Main.AimKey) then
         return
     end
+    MouseClick = MouseHelper:Pressed()
 
     local me = WPlayer.GetLocal()
     if not me or not me:IsAlive() then return end
@@ -469,7 +493,7 @@ local function OnCreateMove(userCmd)
 
     local weapon = me:GetActiveWeapon()
     if not weapon then return end
-
+    GCMD = userCmd
     -- Check if we can shoot if not reload weapon
     --local flCurTime = globals.CurTime()
     --[[local canShoot = me:GetNextAttack() <= flCurTime
@@ -528,7 +552,6 @@ local function OnCreateMove(userCmd)
         end
     end
     currentTarget = nil
-    targetFound = nil
 end
 
 local function convertPercentageToRGB(percentage)
@@ -551,6 +574,11 @@ local function OnDraw()
     if input.IsButtonPressed( KEY_INSERT )then
         toggleMenu()
     end
+
+     -- Addthis at the top of your file where you keep your state variables
+    local waitingForKeyPress = false
+    local keybind = nil  -- Replace this with your initial keybind value
+
     --[[ Dynamic optymisator
     if globals.FrameCount() % fps_check_interval == 0 then
         current_fps = math.floor(1 / globals.FrameTime())
@@ -650,13 +678,33 @@ local function OnDraw()
             ImMenu.BeginFrame(1)
             ImMenu.Text("The menu keys is INSERT")
             ImMenu.EndFrame()
+       
+            -- Add this in your main loop where UI elements are drawn and handled
+            if not waitingForKeyPress then
+                -- Replace 'Keybind Button' with appropriate label text
+                local clicked, active = ImMenu.Button("Keybind Button")
+                if clicked then
+                    waitingForKeyPress = true
+                end
+            else
+                -- Listen for key press here
+                local pressedKey = input.IsButtonDown  -- Assuming GetInput() returns the pressed key
+                if pressedKey then
+                    keybind = pressedKey  -- Update your keybind
+                    waitingForKeyPress = false  -- Reset state variable
+                end
+
+                -- Display some text to indicate that the UI is waiting for a key press
+                ImMenu.Text("Press a key to set the keybind...")
+            end
+
 
             ImMenu.BeginFrame(1)
-            Menu.Main.Active = ImMenu.Checkbox("Active", Menu.Main.Active)
+            Menu.Main.AutoShoot = ImMenu.Checkbox("AutoShoot", Menu.Main.AutoShoot)
             ImMenu.EndFrame()
 
             ImMenu.BeginFrame(1)
-            Menu.Main.AimFov = ImMenu.Slider("Fov", Menu.Main.AimFov , 0.1, 360)
+            Menu.Main.AimFov = ImMenu.Slider("Fov", Menu.Main.AimFov , 1, 360)
             ImMenu.EndFrame()
 
             ImMenu.BeginFrame(1)
@@ -676,8 +724,21 @@ local function OnDraw()
         if Menu.tabs.Advanced == true then
 
             ImMenu.BeginFrame(1)
+            Menu.Advanced.PredTicks = ImMenu.Slider("Max Simulation Ticks", Menu.Advanced.PredTicks , 1, 100)
+            ImMenu.EndFrame()
+
+            ImMenu.BeginFrame(1)
+            Menu.Advanced.StrafePrediction = ImMenu.Checkbox("Strafe Pred", Menu.Advanced.StrafePrediction)
+            ImMenu.EndFrame()
+
+            ImMenu.BeginFrame(1)
+            Menu.Advanced.CollisionCalculations = ImMenu.Checkbox("Collision Calculations", Menu.Advanced.CollisionCalculations)
+            ImMenu.EndFrame()
+
+            ImMenu.BeginFrame(1)
             Menu.Advanced.Hitchance_Accuracy = ImMenu.Slider("Accuracy", Menu.Advanced.Hitchance_Accuracy , 1, Menu.Advanced.PredTicks)
             ImMenu.EndFrame()
+            
 
             --[[ImMenu.BeginFrame(1)
             ImMenu.Text("Aim Mode")
