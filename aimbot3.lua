@@ -38,14 +38,14 @@ local Menu = { -- this is the config that will be loaded every time u load the s
             Hitscan = Hitbox.Head,
             Projectile = Hitbox.Feet
         },
-        AimFov = 120,
+        AimFov = 60,
         MinHitchance = 35,
     },
 
     Advanced = {
-        PredTicks = 69,
+        PredTicks = 47,
         StrafePrediction = true,
-        StrafeSamples = 2,
+        StrafeSamples = 1,
         Aim_Modes = {
             Leading = true,
             trailing = false,
@@ -109,164 +109,34 @@ local targetFound
 ---@param me WPlayer
 local function CalcStrafe(me)
     local players = entities.FindByClass("CTFPlayer")
+
+    -- Initialize tables if they are not already initialized
+    lastAngles = lastAngles or {}
+    strafeAngles = strafeAngles or {}
+
     for idx, entity in ipairs(players) do
-        if entity:IsDormant() or not entity:IsAlive() then
+        -- Reset angle for dormant or dead players and teammates
+        if entity:IsDormant() or not entity:IsAlive() or entity:GetTeamNumber() == me:GetTeamNumber() then
             lastAngles[idx] = nil
             strafeAngles[idx] = nil
-            goto continue
-        end
-
-        -- Ignore teammates
-        if entity:GetTeamNumber() == me:GetTeamNumber() then
-            lastAngles[idx] = nil
-            strafeAngles[idx] = nil
-            goto continue
-        end
-
-        local v = entity:EstimateAbsVelocity()
-        local angle = v:Angles()
-
-        -- Play doesn't have a last angle
-        if lastAngles[idx] == nil then
-            lastAngles[idx] = angle
-            goto continue
-        end
-
-        -- Calculate the delta angle
-        if angle.y ~= lastAngles[idx].y then
-            local delta = Math.NormalizeAngle(angle.y - lastAngles[idx].y)
-            strafeAngles[idx] = math.clamp(delta, -5, 5)
-        end
-        lastAngles[idx] = angle
-
-        ::continue::
-    end
-end
-
-
--- Predict the position of a player
----@param player WPlayer
----@param t integer
----@param d number?
----@param initialData { pos: Vector3, vel: Vector3, onGround: boolean }
----@param skipTicks integer
----@return { pos : Vector3[], vel: Vector3[], onGround: boolean[] }?
-local function OptymisedPrediction(player, t, d, skipTicks)
-    local gravity = client.GetConVar("sv_gravity")
-    local stepSize = player:GetPropFloat("localdata", "m_flStepSize")
-    if not gravity or not stepSize then return nil end
-
-    local vUp = Vector3(0, 0, 1)
-    vHitbox = { Vector3(-20, -20, 0), Vector3(20, 20, 80) }
-    local vStep = Vector3(0, 0, stepSize / 2) -- smaller step size for more precision
-    shouldHitEntity = function (e, _) return false end
-
-    -- Add the current record
-    local _out = {
-        pos = { [0] = player:GetAbsOrigin() },
-        vel = { [0] = player:EstimateAbsVelocity() },
-        onGround = { [0] = player:IsOnGround() }
-    }
-
-    -- Cache math functions
-    local acos = math.acos
-    local deg = math.deg
-
-    -- Perform the prediction
-    local skipPhysics = false
-    for i = 1, t * 2 do -- increase the number of iterations for more precision
-        local lastP, lastV, lastG = _out.pos[i - 1], _out.vel[i - 1], _out.onGround[i - 1]
-
-        local pos = lastP + lastV * globals.TickInterval()
-        local vel = lastV
-        local onGround = lastG
-
-        -- Apply deviation
-        if d then
-            local ang = vel:Angles()
-            ang.y = ang.y + d
-            vel = ang:Forward() * vel:Length()
-        end
-
-        --[[ Forward collision ]]
-
-        local wallTrace = engine.TraceHull(lastP + vStep, pos + vStep, vHitbox[1], vHitbox[2], MASK_PLAYERSOLID, shouldHitEntity)
-        --DrawLine(last.p + vStep, pos + vStep)
-        if wallTrace.fraction < 1 then
-            -- We'll collide
-            local normal = wallTrace.plane
-            local angle = deg(acos(normal:Dot(vUp)))
-
-            -- Check the wall angle
-            if angle > 55 then
-                -- The wall is too steep, we'll collide
-                local dot = vel:Dot(normal)
-                vel = vel - normal * dot
-            end
-
-            pos.x, pos.y = wallTrace.endpos.x, wallTrace.endpos.y
-        end
-
-        --[[ Ground collision ]]
-
-        -- Don't step down if we're in-air
-        local downStep = vStep
-        if not onGround then downStep = Vector3() end
-
-        local groundTrace = engine.TraceHull(pos + vStep, pos - downStep, vHitbox[1], vHitbox[2], MASK_PLAYERSOLID, shouldHitEntity)
-        --DrawLine(pos + vStep, pos - downStep)
-        if groundTrace.fraction < 1 then
-            -- We'll hit the ground
-            local normal = groundTrace.plane
-            local angle = deg(acos(normal:Dot(vUp)))
-
-            -- Check the ground angle
-            if angle < 45 then
-                pos = groundTrace.endpos
-                onGround = true
-            elseif angle < 55 then
-                -- The ground is too steep, we'll slide [TODO]
-                vel.x, vel.y, vel.z = 0, 0, 0
-                onGround = false
-            else
-                -- The ground is too steep, we'll collide
-                local dot = vel:Dot(normal)
-                vel = vel - normal * dot
-                onGround = true
-            end
-
-            -- Don't apply gravity if we're on the ground
-            if onGround then vel.z = 0 end
         else
-            -- We're in the air
-            onGround = false
-        end
+            local angle = entity:EstimateAbsVelocity():Angles() --get angle of velocity vector
 
-        -- Gravity
-        if not onGround then
-            vel.z = vel.z - gravity * globals.TickInterval()
-        end
-
-        -- Add the prediction record
-        _out.pos[i], _out.vel[i], _out.onGround[i] = pos, vel, onGround
-
-        -- Skip physics calculations for the specified number of ticks
-        if i >= skipTicks and not skipPhysics then
-            local lastPos = _out.pos[i - skipTicks]
-            local trace = engine.TraceHull(lastPos + vStep, pos + vStep, vHitbox[1], vHitbox[2], MASK_PLAYERSOLID, shouldHitEntity)
-            if trace.fraction < 1 then
-                skipPhysics = true
-                i = i - skipTicks
+            -- Player doesn't have a last angle
+            if lastAngles[idx] == nil then
+                lastAngles[idx] = angle
+            else
+                -- Calculate the delta angle
+                if angle.y ~= lastAngles[idx].y then
+                    local delta = Math.NormalizeAngle(angle.y - lastAngles[idx].y)
+                    strafeAngles[idx] = math.clamp(delta, -5, 5)
+                else
+                    strafeAngles[idx] = 0  -- Reset the strafe angle if there is no change
+                end
+                lastAngles[idx] = angle
             end
         end
-
-        -- Reset skipPhysics flag
-        if skipPhysics and i % skipTicks == 0 then
-            skipPhysics = false
-        end
     end
-
-    return _out
 end
 
 local function calculateHitChancePercentage(lastPredictedPos, currentPos)
@@ -342,7 +212,6 @@ local function CheckProjectileTarget(me, weapon, player)
     local lastP = player:GetAbsOrigin()
     local lastV = player:EstimateAbsVelocity()
     local lastG = player:IsOnGround()
-    local Deviation = strafeAngle
     local gravity = client.GetConVar("sv_gravity")
     local stepSize = player:GetPropFloat("localdata", "m_flStepSize")
     if not gravity or not stepSize then return nil end
@@ -361,10 +230,10 @@ local function CheckProjectileTarget(me, weapon, player)
         local vel = lastV
         local onGround = lastG
 
-        -- Apply deviation
-        if Deviation then
+        -- Apply strafeAngle
+        if strafeAngle then
             local ang = vel:Angles()
-            ang.y = ang.y + Deviation
+            ang.y = ang.y + strafeAngle
             vel = ang:Forward() * vel:Length()
         end
 
@@ -393,7 +262,7 @@ local function CheckProjectileTarget(me, weapon, player)
         lastP, lastV, lastG = pos, vel, onGround
 
         -- Store the predicted position in the predicted path table
-            table.insert(vPath, pos)
+        table.insert(vPath, pos)
 
         -- Projectile Targeting Logic
         pos = lastP + aimOffset
@@ -428,12 +297,11 @@ local function CheckProjectileTarget(me, weapon, player)
         break
         ::continue::
     end
-
     if not targetAngles then return nil end
 
     -- Additional Checks and Finalization
     if (player:GetAbsOrigin() - me:GetAbsOrigin()):Length() < 100 then return end
-    strafeAngle = 0 --reset deviation
+
     return { entity = player, angles = targetAngles, factor = fov }
 end
 
