@@ -63,15 +63,15 @@ local function doDraw()
             ImMenu.EndFrame()
 
             ImMenu.BeginFrame(1)
-            options.Viewmodel_x = ImMenu.Slider("Viewmodel X", options.Viewmodel_x, 1, 180)
+            options.Viewmodel_x = ImMenu.Slider("Viewmodel X", options.Viewmodel_x, -180, 180)
             ImMenu.EndFrame()
 
             ImMenu.BeginFrame(1)
-            options.Viewmodel_y = ImMenu.Slider("Viewmodel Y", options.Viewmodel_y, 1, 180)
+            options.Viewmodel_y = ImMenu.Slider("Viewmodel Y", options.Viewmodel_y, -180, 180)
             ImMenu.EndFrame()
 
             ImMenu.BeginFrame(1)
-            options.Viewmodel_z = ImMenu.Slider("Viewmodel Z", options.Viewmodel_z, 1, 180)
+            options.Viewmodel_z = ImMenu.Slider("Viewmodel Z", options.Viewmodel_z, -180, 180)
             ImMenu.EndFrame()
 
            
