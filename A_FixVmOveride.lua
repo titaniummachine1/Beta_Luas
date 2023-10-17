@@ -8,13 +8,31 @@ local menuLoaded, ImMenu = pcall(require, "ImMenu")
 assert(menuLoaded, "ImMenu not found, please install it!")
 
 local tahoma_bold = draw.CreateFont("Tahoma", 12, 800, FONTFLAG_OUTLINE)
+local _, _, defaultConVarValue = client.GetConVar("tf_viewmodels_offset_override")  -- We are interested in the third value
+
+local function split(str, sep)
+    local result = {}
+    local regex = ("([^%s]+)"):format(sep)
+    for each in str:gmatch(regex) do
+        table.insert(result, each)
+    end
+    return result
+end
+
+-- Split it into its components
+local components = split(defaultConVarValue, " ")
+
+-- Convert the components to numbers
+local defaultx = tonumber(components[1])
+local defaulty = tonumber(components[2])
+local defaultz = tonumber(components[3])
 
 
 local options = {
     enable = true,
-    Viewmodel_x = 0,
-    Viewmodel_y = 0,
-    Viewmodel_z = 0
+    Viewmodel_x = defaultx,
+    Viewmodel_y = defaulty,
+    Viewmodel_z = defaultz
 }
 
 --remove cvar protection
@@ -34,6 +52,11 @@ local function CreateMove(pCmd)
         client.SetConVar("cl_wpn_sway_scale", 7) -- change numbers to switch sway ammount i just like it like this
         client.SetConVar("cl_wpn_sway_interp", 5)
 
+    else
+        local x, y, z = defaultx, defaulty, defaultz  -- Replace these with your actual values
+        print(x, y, z)
+        local convarValue = string.format("%d %d %d", x, y, z)
+        client.SetConVar("tf_viewmodels_offset_override", convarValue)
     end
 end
 
@@ -74,14 +97,13 @@ local function doDraw()
             options.Viewmodel_z = ImMenu.Slider("Viewmodel Z", options.Viewmodel_z, -180, 180)
             ImMenu.EndFrame()
 
-           
         end
-      
 end
 
 local function Unload()
-    MenuLib.RemoveMenu(menu)
-
+        local x, y, z = defaultx, defaulty, defaultz  -- Replace these with your actual values
+        local convarValue = string.format("%d %d %d", x, y, z)
+        client.SetConVar("tf_viewmodels_offset_override", convarValue)
     client.Command('play "ui/buttonclickrelease"', true)
 end
 
