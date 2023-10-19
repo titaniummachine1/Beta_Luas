@@ -49,6 +49,8 @@ local lastKeyForward = nil  -- Variable to store the last key pressed for forwar
 local function handleMovement(cmd)
     local localPlayer = entities.GetLocalPlayer()
     if not localPlayer then return end
+    local pFlags = self:GetPropInt("m_fFlags")
+    if not (pFlags & FL_ONGROUND) == 1 then return end --disable when airbone
 
     local velocity = localPlayer:EstimateAbsVelocity()
     print(velocity:Length())
