@@ -50,10 +50,8 @@ local function handleMovement(cmd)
     local localPlayer = entities.GetLocalPlayer()
     if not localPlayer then return end
     local pFlags = localPlayer:GetPropInt("m_fFlags")
-    if not (pFlags & FL_ONGROUND) == 1 then return end --disable when airbone
-
+    if (pFlags & FL_ONGROUND) == 0 then return end --disable when airbone
     local velocity = localPlayer:EstimateAbsVelocity()
-    print(velocity:Length())
     -- Define movement speed
     local moveSpeed = 660
 
