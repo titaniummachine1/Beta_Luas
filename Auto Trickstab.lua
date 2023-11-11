@@ -67,7 +67,7 @@ UpdateLocalPlayerCache()
 UpdatePlayersCache()
 
 -- Constants
-local NUM_DIRECTIONS = 8  -- Example: 8 directions (N, NE, E, SE, S, SW, W, NW)
+local NUM_DIRECTIONS = 5  -- Example: 8 directions (N, NE, E, SE, S, SW, W, NW)
 local MAX_SPEED = 320  -- Maximum speed
 local SIMULATION_TICKS = 24  -- Number of ticks for simulation
 local positions = {}
@@ -195,7 +195,8 @@ local function CanBackstabFromPosition(cmd, viewPos, real, targetPlayerGlobal)
                     BestPosition = viewPos
                 end
 
-                return yawDifference > 100
+                if pLocal:EstimateAbsVelocity():Length() < 150 then return false end
+                return yawDifference > 90
             end
         end
     end
@@ -233,41 +234,37 @@ local function SimulateWalkingInDirections(player, target, spread)
     local playerPos = player:GetAbsOrigin()
     local targetPos = target:GetAbsOrigin()
 
-    -- Calculate the central direction towards the target
     local centralDirection = NormalizeVector(targetPos - playerPos)
     local centralAngle = math.deg(math.atan(centralDirection.y, centralDirection.x))
 
-    -- Check left and right offsets first
-    local specialOffsets = {-90, 90}  -- -90 and 90 degrees
+    local minAngleDiff = 20  -- Minimum angle difference from 0°
+    local specialOffsets = {-90, 90, 0}  -- Special cases for -90° and 90°
+
+    -- Include special offsets first
     for _, offsetAngle in ipairs(specialOffsets) do
         local angle = (centralAngle + offsetAngle) % 360
         local radianAngle = math.rad(angle)
-
         local directionVector = NormalizeVector(Vector3(math.cos(radianAngle), math.sin(radianAngle), 0))
         local simulatedVelocity = directionVector * MAX_SPEED
-
         endPositions[angle] = PredictPlayer(player, simulatedVelocity)
     end
 
-    -- Check remaining angles within spread
-    local halfSpread = spread / 2
-    local remainingAngles = NUM_DIRECTIONS - #specialOffsets  -- Adjust for special angles already checked
-    for i = 1, remainingAngles do
-        local offsetAngle = ((i - 1) / (remainingAngles - 1)) * spread - halfSpread
-        -- Skip special offsets
-        if offsetAngle ~= -90 and offsetAngle ~= 90 then
-            local angle = (centralAngle + offsetAngle) % 360
-            local radianAngle = math.rad(angle)
+    -- Include forward angle and angles with minimum difference
+    for i = 1, NUM_DIRECTIONS do
+        local offsetAngle = ((i - 1) / (NUM_DIRECTIONS - 1)) * spread - (spread / 2)
+        local angle = (centralAngle + offsetAngle) % 360
 
+        if offsetAngle == 0 or (offsetAngle >= minAngleDiff or offsetAngle <= -minAngleDiff) then
+            local radianAngle = math.rad(angle)
             local directionVector = NormalizeVector(Vector3(math.cos(radianAngle), math.sin(radianAngle), 0))
             local simulatedVelocity = directionVector * MAX_SPEED
-
             endPositions[angle] = PredictPlayer(player, simulatedVelocity)
         end
     end
 
     return endPositions
 end
+
 
 
 -- Computes the move vector between two points
