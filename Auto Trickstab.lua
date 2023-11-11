@@ -33,7 +33,6 @@ local function UpdateLocalPlayerCache()
     pLocalViewPos = cachedLocalPlayer and (cachedLocalPlayer:GetAbsOrigin() + cachedLocalPlayer:GetPropVector("localdata", "m_vecViewOffset[0]")) or nil
 end
 
--- Function to update the cache for all players
 local function UpdatePlayersCache()
     local allPlayers = entities.FindByClass("CTFPlayer")
     for i, player in pairs(allPlayers) do
@@ -45,7 +44,8 @@ local function UpdatePlayersCache()
                 teamNumber = player:GetTeamNumber(),
                 absOrigin = player:GetAbsOrigin(),
                 viewOffset = player:GetPropVector("localdata", "m_vecViewOffset[0]"),
-                hitboxPos = GetHitboxPos(player, 4)
+                hitboxPos = GetHitboxPos(player, 4),
+                viewAngles = player:GetPropVector("tfnonlocaldata", "m_angEyeAngles[0]") -- Store view angles
             }
         end
     end
@@ -162,13 +162,12 @@ local function CanBackstabFromPosition(cmd, viewPos, real)
                 if real then
                     return cachedLoadoutSlot2:GetPropInt("m_bReadyToBackstab") == 257
                 else
-                    local enemy_back_direction = -NormalizeVector(targetPlayer.viewOffset)
-                    local spy_to_enemy_direction = NormalizeVector(targetPlayer.hitboxPos - viewPos)
-                    local dot_product = spy_to_enemy_direction.x * enemy_back_direction.x +
-                                        spy_to_enemy_direction.y * enemy_back_direction.y +
-                                        spy_to_enemy_direction.z * enemy_back_direction.z
-                    local angle = math.acos(dot_product) * (180 / math.pi)
-                    print(angle)
+                    local enemyBackDirection = NormalizeVector(targetPlayer.viewAngles)
+                    local spyToEnemyDirection = NormalizeVector(viewPos - targetPlayer.hitboxPos)
+                    local dotProduct = spyToEnemyDirection.x * enemyBackDirection.x +
+                                       spyToEnemyDirection.y * enemyBackDirection.y +
+                                       spyToEnemyDirection.z * enemyBackDirection.z
+                    local angle = math.acos(dotProduct) * (180 / math.pi)
                     return angle <= BACKSTAB_ANGLE / 2
                 end
             end
@@ -200,19 +199,20 @@ local function GetBestTarget(me)
 end
 
 
-local function SimulateWalkingInDirections(player, target)
+local function SimulateWalkingInDirections(player, target, spread)
     local endPositions = {}
     local playerPos = player:GetAbsOrigin()
     local targetPos = target:GetAbsOrigin()
 
-    -- Calculate the direction towards the target
-    local targetDirection = NormalizeVector(targetPos - playerPos)
+    -- Calculate the central direction towards the target
+    local centralDirection = NormalizeVector(targetPos - playerPos)
+    local centralAngle = math.deg(math.atan(centralDirection.y, centralDirection.x))
 
-    -- Calculate the starting angle for the target direction
-    local startAngle = math.deg(math.atan(targetDirection.y, targetDirection.x))
+    local halfSpread = spread / 2
 
-    for direction = 1, NUM_DIRECTIONS do
-        local angle = (startAngle + (direction - 1) * (360 / NUM_DIRECTIONS)) % 360
+    for i = 1, NUM_DIRECTIONS do
+        local offsetAngle = ((i - 1) / (NUM_DIRECTIONS - 1)) * spread - halfSpread
+        local angle = (centralAngle + offsetAngle) % 360
         local radianAngle = math.rad(angle)
 
         local directionVector = NormalizeVector(Vector3(math.cos(radianAngle), math.sin(radianAngle), 0))
@@ -225,6 +225,39 @@ local function SimulateWalkingInDirections(player, target)
     return endPositions
 end
 
+-- Computes the move vector between two points
+---@param userCmd UserCmd
+---@param a Vector3
+---@param b Vector3
+---@return Vector3
+local function ComputeMove(userCmd, a, b)
+    local diff = (b - a)
+    if diff:Length() == 0 then return Vector3(0, 0, 0) end
+
+    local x = diff.x
+    local y = diff.y
+    local vSilent = Vector3(x, y, 0)
+
+    local ang = vSilent:Angles()
+    local cPitch, cYaw, cRoll = userCmd:GetViewAngles()
+    local yaw = math.rad(ang.y - cYaw)
+    local pitch = math.rad(ang.x - cPitch)
+    local move = Vector3(math.cos(yaw) * 320, -math.sin(yaw) * 320, -math.cos(pitch) * 320)
+
+    return move
+end
+
+-- Walks to the destination
+---@param userCmd UserCmd
+---@param localPlayer Entity
+---@param destination Vector3
+local function WalkTo(userCmd, localPlayer, destination)
+    local localPos = localPlayer:GetAbsOrigin()
+    local result = ComputeMove(userCmd, localPos, destination)
+
+    userCmd:SetForwardMove(result.x)
+    userCmd:SetSideMove(result.y)
+end
 
 local allWarps = {}
 local endwarps = {}
@@ -241,7 +274,7 @@ local function OnCreateMove(cmd)
     local target = GetBestTarget(cachedLocalPlayer)
     if not target then return end
 
-    local currentWarps = SimulateWalkingInDirections(cachedLocalPlayer, target)
+    local currentWarps = SimulateWalkingInDirections(cachedLocalPlayer, target, 50)
 
     table.insert(allWarps, currentWarps)
 
@@ -253,9 +286,11 @@ local function OnCreateMove(cmd)
     end
 
         -- check if any of warp positions can stab anyone
+        local lastDistance
         for angle, point in pairs(endwarps) do
             if CanBackstabFromPosition(cmd, point + Vector3(0, 0, 75), false) then
-                BackstabOportunity = point
+                BackstabOportunity = point --the best point
+                WalkTo(cmd, cachedLocalPlayer, point)
             end
         end
     if CanBackstabFromPosition(cmd, pLocalViewPos, true) then
