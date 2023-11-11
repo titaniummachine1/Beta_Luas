@@ -146,6 +146,12 @@ end
 local BACKSTAB_RANGE = 105  -- Hammer units
 local BACKSTAB_ANGLE = 180  -- Degrees in radians for dot product calculation
 
+local BestYawDifference = 0
+local BestPosition
+
+local BestYawDifference = 0
+local BestPosition = nil
+
 local function CanBackstabFromPosition(cmd, viewPos, real)
     local weaponReady = cachedLoadoutSlot2 ~= nil
     if not weaponReady then return false end
@@ -155,20 +161,24 @@ local function CanBackstabFromPosition(cmd, viewPos, real)
             local distance = math.abs(viewPos.x - targetPlayer.hitboxPos.x) + 
                              math.abs(viewPos.y - targetPlayer.hitboxPos.y) + 
                              math.abs(viewPos.z - targetPlayer.hitboxPos.z)
+
             if distance < BACKSTAB_RANGE then
                 local ang = PositionAngles(viewPos, targetPlayer.hitboxPos)
                 cmd:SetViewAngles(ang:Unpack())
 
+                local enemyYaw = math.deg(math.atan(targetPlayer.viewAngles.y, targetPlayer.viewAngles.x))
+                local spyYaw = math.deg(math.atan(viewPos.y - targetPlayer.hitboxPos.y, viewPos.x - targetPlayer.hitboxPos.x))
+                local yawDifference = math.abs(enemyYaw - spyYaw)
+
+                if not real and yawDifference > BestYawDifference then
+                    BestYawDifference = yawDifference
+                    BestPosition = viewPos
+                end
+
                 if real then
                     return cachedLoadoutSlot2:GetPropInt("m_bReadyToBackstab") == 257
                 else
-                    local enemyBackDirection = NormalizeVector(targetPlayer.viewAngles)
-                    local spyToEnemyDirection = NormalizeVector(viewPos - targetPlayer.hitboxPos)
-                    local dotProduct = spyToEnemyDirection.x * enemyBackDirection.x +
-                                       spyToEnemyDirection.y * enemyBackDirection.y +
-                                       spyToEnemyDirection.z * enemyBackDirection.z
-                    local angle = math.acos(dotProduct) * (180 / math.pi)
-                    return angle <= BACKSTAB_ANGLE / 2
+                    return yawDifference > 90
                 end
             end
         end
@@ -177,10 +187,12 @@ local function CanBackstabFromPosition(cmd, viewPos, real)
     return false
 end
 
+
+
 local function GetBestTarget(me)
     local players = entities.FindByClass("CTFPlayer")
     local bestTarget = nil
-    local maxDistance = 160  -- 24 ticks into future at speed of 320 units
+    local maxDistance = 1200  -- 24 ticks into future at speed of 320 units
 
     for _, player in pairs(players) do
         if player ~= nil and player:IsAlive() and not player:IsDormant()
@@ -265,6 +277,7 @@ local endwarps = {}
 local function OnCreateMove(cmd)
     UpdateLocalPlayerCache()  -- Update local player data every tick
     UpdatePlayersCache()  -- Update player data every tick
+    BestYawDifference = 0
 
     allWarps = {}
     endwarps = {}
@@ -274,25 +287,27 @@ local function OnCreateMove(cmd)
     local target = GetBestTarget(cachedLocalPlayer)
     if not target then return end
 
-    local currentWarps = SimulateWalkingInDirections(cachedLocalPlayer, target, 50)
+    local currentWarps = SimulateWalkingInDirections(cachedLocalPlayer, target, 80)
 
     table.insert(allWarps, currentWarps)
 
     -- Storing 24th tick positions in endwarps
-    for angle, positions in pairs(currentWarps) do
-        if positions[24] then
-            endwarps[angle] = positions[24]
+    for angle, positions1 in pairs(currentWarps) do
+        if positions1[24] then
+            endwarps[angle] = positions1[24]
         end
     end
 
         -- check if any of warp positions can stab anyone
         local lastDistance
+        BestPosition = target:GetAbsOrigin()
         for angle, point in pairs(endwarps) do
             if CanBackstabFromPosition(cmd, point + Vector3(0, 0, 75), false) then
-                BackstabOportunity = point --the best point
-                WalkTo(cmd, cachedLocalPlayer, point)
+                BackstabOportunity = BestPosition --the best point
+                WalkTo(cmd, cachedLocalPlayer, BestPosition)
             end
         end
+
     if CanBackstabFromPosition(cmd, pLocalViewPos, true) then
         cmd:SetButtons(cmd.buttons | IN_ATTACK)  -- Perform backstab
     end
@@ -339,7 +354,7 @@ local function doDraw()
     if BackstabOportunity then
         local screenPos = client.WorldToScreen(Vector3(BackstabOportunity.x, BackstabOportunity.y, BackstabOportunity.z))
         if screenPos then
-            draw.Color(255, 255, 0, 255)
+            draw.Color(255, 255, 255, 255)
             draw.FilledRect(screenPos[1] - 5, screenPos[2] - 5, screenPos[1] + 5, screenPos[2] + 5)
         end
     end
