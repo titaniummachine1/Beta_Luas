@@ -32,7 +32,6 @@ local function UpdatePlayersCache()
     local allPlayers = entities.FindByClass("CTFPlayer")
     for i, player in pairs(allPlayers) do
         if player:GetIndex() ~= cachedLocalPlayer:GetIndex() then
-            local hitboxPos = GetHitboxPos(player, 4)  -- Assuming hitbox ID 4 is relevant
             cachedPlayers[player:GetIndex()] = {
                 entity = player,
                 isAlive = player:IsAlive(),
@@ -40,7 +39,7 @@ local function UpdatePlayersCache()
                 teamNumber = player:GetTeamNumber(),
                 absOrigin = player:GetAbsOrigin(),
                 viewOffset = player:GetPropVector("localdata", "m_vecViewOffset[0]"),
-                hitboxPos = hitboxPos
+                hitboxPos = GetHitboxPos(player, 4)
             }
         end
     end
@@ -51,39 +50,43 @@ end
 UpdateLocalPlayerCache()
 UpdatePlayersCache()
 
--- Function to check if a backstab can be performed on a specific player from a position
-local function CanBackstabFromPosition(viewPos, targetPlayer)
-    if not cachedLoadoutSlot2 or cachedLoadoutSlot2:GetPropInt("m_bReadyToBackstab") ~= 257 then
-        return false
-    end
+local hitboxpos = Vector3(0, 0, 0)
+local function CanBackstabFromPosition(cmd, viewPos)
+    for _, targetPlayer in pairs(cachedPlayers) do
+        if targetPlayer.isAlive and not targetPlayer.isDormant and targetPlayer.teamNumber ~= cachedLocalPlayer:GetTeamNumber() then
+            local distance = vector.Distance(viewPos, targetPlayer.hitboxPos)
+            hitboxpos = targetPlayer.hitboxPos
+            if distance < 105 then  -- Assuming 105 is the backstab range
+                local ang = PositionAngles(viewPos, targetPlayer.hitboxPos)
+                cmd:SetViewAngles(ang:Unpack())  -- Set view angles
 
-    if targetPlayer.isAlive and not targetPlayer.isDormant and targetPlayer.teamNumber ~= cachedLocalPlayer:GetTeamNumber() then
-        local distance = vector.Distance(viewPos, targetPlayer.absOrigin + targetPlayer.viewOffset)
-        if distance < 105 then  -- Assuming 105 is the backstab range
-            return true
+                if cachedLoadoutSlot2 and cachedLoadoutSlot2:GetPropInt("m_bReadyToBackstab") == 257 then
+                    return true
+                end
+            end
         end
     end
 
     return false
 end
 
--- Main function for player targeting and action execution
 local function OnCreateMove(cmd)
     UpdateLocalPlayerCache()  -- Update local player data every tick
     UpdatePlayersCache()  -- Update player data every tick
 
-    for _, cachedPlayer in pairs(cachedPlayers) do
-        if CanBackstabFromPosition(pLocalViewPos, cachedPlayer) then
-            local ang = PositionAngles(pLocalViewPos, cachedPlayer.hitboxPos)
-            cmd:SetViewAngles(ang:Unpack())
-            local weapon = cachedLocalPlayer:GetPropEntity("m_hActiveWeapon")
-            if weapon == cachedLoadoutSlot2 and weapon:GetPropInt("m_bReadyToBackstab") == 257 then
-                cmd:SetButtons(cmd.buttons | IN_ATTACK)
-            end
-        end
+    if CanBackstabFromPosition(cmd, pLocalViewPos) then
+        cmd:SetButtons(cmd.buttons | IN_ATTACK)  -- Perform backstab
     end
+end
+
+local function doDraw()
+
 end
 
 callbacks.Unregister("CreateMove", "OnCreateMove123313")
 callbacks.Register("CreateMove", "OnCreateMove12313", OnCreateMove)
+
+callbacks.Unregister("Draw", "AMsadaAT_Draw")                        -- Unregister the "Draw" callback
+callbacks.Register("Draw", "AMsadaAT_Draw", doDraw)                               -- Register the "Draw" callback
+
 
