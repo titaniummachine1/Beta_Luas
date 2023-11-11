@@ -20,11 +20,22 @@ local function NormalizeVector(vec)
     return Vector3(vec.x / length, vec.y / length, vec.z / length)
 end
 
+local function calculateYaw(y, x)
+    local angle = math.atan(y / x)
+    if x < 0 then
+        angle = angle + math.pi -- adjust for 2nd and 3rd quadrants
+    elseif y < 0 then
+        angle = angle + 2 * math.pi -- adjust for 4th quadrant
+    end
+    return angle * (180 / math.pi) -- convert to degrees
+end
+
 local cachedLocalPlayer
 local cachedPlayers = {}
 local cachedLoadoutSlot2
 local pLocalViewPos
 local tickCount = 0
+local pLocal = entities.GetLocalPlayer()
 
 -- Function to update the cache for the local player and loadout slot
 local function UpdateLocalPlayerCache()
@@ -142,6 +153,8 @@ local function PredictPlayer(player, simulatedVelocity)
     return positions
 end
 
+
+
 -- Constants
 local BACKSTAB_RANGE = 105  -- Hammer units
 local BACKSTAB_ANGLE = 180  -- Degrees in radians for dot product calculation
@@ -149,43 +162,47 @@ local BACKSTAB_ANGLE = 180  -- Degrees in radians for dot product calculation
 local BestYawDifference = 0
 local BestPosition
 
-local BestYawDifference = 0
-local BestPosition = nil
-
-local function CanBackstabFromPosition(cmd, viewPos, real)
+local function CanBackstabFromPosition(cmd, viewPos, real, targetPlayerGlobal)
     local weaponReady = cachedLoadoutSlot2 ~= nil
     if not weaponReady then return false end
 
-    for _, targetPlayer in pairs(cachedPlayers) do
-        if targetPlayer.isAlive and not targetPlayer.isDormant and targetPlayer.teamNumber ~= cachedLocalPlayer:GetTeamNumber() then
-            local distance = math.abs(viewPos.x - targetPlayer.hitboxPos.x) + 
-                             math.abs(viewPos.y - targetPlayer.hitboxPos.y) + 
-                             math.abs(viewPos.z - targetPlayer.hitboxPos.z)
-
+    if real then
+        for _, targetPlayer in pairs(cachedPlayers) do
+            if targetPlayer.isAlive and not targetPlayer.isDormant and targetPlayer.teamNumber ~= cachedLocalPlayer:GetTeamNumber() then
+                local distance = vector.Distance(viewPos, targetPlayer.hitboxPos)
+                if distance < BACKSTAB_RANGE then
+                    local ang = PositionAngles(viewPos, targetPlayer.hitboxPos)
+                    cmd:SetViewAngles(ang:Unpack())
+                    if cachedLoadoutSlot2:GetPropInt("m_bReadyToBackstab") == 257 then
+                        return true
+                    end
+                end
+            end
+        end
+    else
+        local targetPlayer = cachedPlayers[targetPlayerGlobal:GetIndex()]
+        if targetPlayer and targetPlayer.isAlive and not targetPlayer.isDormant and targetPlayer.teamNumber ~= cachedLocalPlayer:GetTeamNumber() then
+            local distance = vector.Distance(viewPos, targetPlayer.hitboxPos)
             if distance < BACKSTAB_RANGE then
-                local ang = PositionAngles(viewPos, targetPlayer.hitboxPos)
-                cmd:SetViewAngles(ang:Unpack())
 
-                local enemyYaw = math.deg(math.atan(targetPlayer.viewAngles.y, targetPlayer.viewAngles.x))
-                local spyYaw = math.deg(math.atan(viewPos.y - targetPlayer.hitboxPos.y, viewPos.x - targetPlayer.hitboxPos.x))
+                local enemyYaw = calculateYaw(targetPlayer.viewAngles.y, targetPlayer.viewAngles.x)
+                local spyYaw = calculateYaw(viewPos.y - targetPlayer.hitboxPos.y, viewPos.x - targetPlayer.hitboxPos.x)
+
                 local yawDifference = math.abs(enemyYaw - spyYaw)
 
-                if not real and yawDifference > BestYawDifference then
+                if yawDifference > BestYawDifference then
                     BestYawDifference = yawDifference
                     BestPosition = viewPos
                 end
 
-                if real then
-                    return cachedLoadoutSlot2:GetPropInt("m_bReadyToBackstab") == 257
-                else
-                    return yawDifference > 90
-                end
+                return yawDifference > 100
             end
         end
     end
 
     return false
 end
+
 
 
 
@@ -220,22 +237,38 @@ local function SimulateWalkingInDirections(player, target, spread)
     local centralDirection = NormalizeVector(targetPos - playerPos)
     local centralAngle = math.deg(math.atan(centralDirection.y, centralDirection.x))
 
-    local halfSpread = spread / 2
-
-    for i = 1, NUM_DIRECTIONS do
-        local offsetAngle = ((i - 1) / (NUM_DIRECTIONS - 1)) * spread - halfSpread
+    -- Check left and right offsets first
+    local specialOffsets = {-90, 90}  -- -90 and 90 degrees
+    for _, offsetAngle in ipairs(specialOffsets) do
         local angle = (centralAngle + offsetAngle) % 360
         local radianAngle = math.rad(angle)
 
         local directionVector = NormalizeVector(Vector3(math.cos(radianAngle), math.sin(radianAngle), 0))
         local simulatedVelocity = directionVector * MAX_SPEED
 
-        -- Predict player position based on the simulated direction
         endPositions[angle] = PredictPlayer(player, simulatedVelocity)
+    end
+
+    -- Check remaining angles within spread
+    local halfSpread = spread / 2
+    local remainingAngles = NUM_DIRECTIONS - #specialOffsets  -- Adjust for special angles already checked
+    for i = 1, remainingAngles do
+        local offsetAngle = ((i - 1) / (remainingAngles - 1)) * spread - halfSpread
+        -- Skip special offsets
+        if offsetAngle ~= -90 and offsetAngle ~= 90 then
+            local angle = (centralAngle + offsetAngle) % 360
+            local radianAngle = math.rad(angle)
+
+            local directionVector = NormalizeVector(Vector3(math.cos(radianAngle), math.sin(radianAngle), 0))
+            local simulatedVelocity = directionVector * MAX_SPEED
+
+            endPositions[angle] = PredictPlayer(player, simulatedVelocity)
+        end
     end
 
     return endPositions
 end
+
 
 -- Computes the move vector between two points
 ---@param userCmd UserCmd
@@ -259,7 +292,10 @@ local function ComputeMove(userCmd, a, b)
     return move
 end
 
--- Walks to the destination
+-- Global variable to store the move direction
+local movedir = Vector3(0, 0, 0)
+
+-- Walks to the destination and sets the global move direction
 ---@param userCmd UserCmd
 ---@param localPlayer Entity
 ---@param destination Vector3
@@ -269,7 +305,11 @@ local function WalkTo(userCmd, localPlayer, destination)
 
     userCmd:SetForwardMove(result.x)
     userCmd:SetSideMove(result.y)
+
+    -- Set the global move direction
+    movedir = Vector3(result.x, result.y, 0)
 end
+
 
 local allWarps = {}
 local endwarps = {}
@@ -278,6 +318,8 @@ local function OnCreateMove(cmd)
     UpdateLocalPlayerCache()  -- Update local player data every tick
     UpdatePlayersCache()  -- Update player data every tick
     BestYawDifference = 0
+    pLocal = entities.GetLocalPlayer()
+    if not pLocal then return end
 
     allWarps = {}
     endwarps = {}
@@ -287,7 +329,7 @@ local function OnCreateMove(cmd)
     local target = GetBestTarget(cachedLocalPlayer)
     if not target then return end
 
-    local currentWarps = SimulateWalkingInDirections(cachedLocalPlayer, target, 80)
+    local currentWarps = SimulateWalkingInDirections(pLocal, target, 80)
 
     table.insert(allWarps, currentWarps)
 
@@ -300,15 +342,14 @@ local function OnCreateMove(cmd)
 
         -- check if any of warp positions can stab anyone
         local lastDistance
-        BestPosition = target:GetAbsOrigin()
         for angle, point in pairs(endwarps) do
-            if CanBackstabFromPosition(cmd, point + Vector3(0, 0, 75), false) then
-                BackstabOportunity = BestPosition --the best point
-                WalkTo(cmd, cachedLocalPlayer, BestPosition)
+            if CanBackstabFromPosition(cmd, point + Vector3(0, 0, 75), false, target) then
+                BackstabOportunity = BestPosition - Vector3(0,0,75) --the best point
+                WalkTo(cmd, pLocal,  BackstabOportunity)
             end
         end
 
-    if CanBackstabFromPosition(cmd, pLocalViewPos, true) then
+    if CanBackstabFromPosition(cmd, pLocalViewPos, true, target) then
         cmd:SetButtons(cmd.buttons | IN_ATTACK)  -- Perform backstab
     end
 end
@@ -359,6 +400,17 @@ local function doDraw()
         end
     end
 
+    local tartpoint = BestPosition
+    if not startPoint or not movedir then return end
+
+    local endPoint = startPoint + movedir
+    local screenStart = client.WorldToScreen(startPoint)
+    local screenEnd = client.WorldToScreen(endPoint)
+
+    if screenStart and screenEnd then
+        draw.Color(255, 0, 0, 255)  -- Red color for line
+        draw.Line(screenStart[1], screenStart[2], screenEnd[1], screenEnd[2])
+    end
 end
 
 callbacks.Unregister("CreateMove", "OnCreateMove123313")
