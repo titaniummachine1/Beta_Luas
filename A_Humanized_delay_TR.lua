@@ -35,45 +35,40 @@ local function NormalizeVector(vec)
     return Vector3(vec.x / length, vec.y / length, vec.z / length)
 end
 
+-- Initialize the global wait time and cache the last best target
+local waitTime = 0
+local lastBestTarget = nil
+local lastBestFov = 360
+local lastCheckTime = 0
+local checkInterval = 0.10  -- Time interval in seconds to check for the best target
+
 local function GetBestTarget(me)
+    local currentTime = globals.CurTime()
+    if currentTime - lastCheckTime < checkInterval then
+        return lastBestTarget, lastBestFov
+    end
+
+    lastCheckTime = currentTime
     local players = entities.FindByClass("CTFPlayer")
     local bestTarget = nil
     local bestFov = 360
 
     for _, player in pairs(players) do
-        if player == nil or not player:IsAlive()
-        or player:IsDormant()
-        or player == me or player:GetTeamNumber() == me:GetTeamNumber()
-        or gui.GetValue("ignore cloaked") == 1 and player:InCond(4) then
-            goto continue
+        if player:IsAlive() and not player:IsDormant() and player:GetTeamNumber() ~= me:GetTeamNumber() and (gui.GetValue("ignore cloaked") == 1 and not player:InCond(4)) then
+            local angles = Math.PositionAngles(me:GetAbsOrigin(), player:GetAbsOrigin())
+            local fov = Math.AngleFov(angles, engine.GetViewAngles())
+            
+            if fov <= bestFov and fov <= 90 then
+                bestTarget = player
+                bestFov = fov
+            end
         end
-        
-        local angles = Math.PositionAngles(me:GetAbsOrigin(), player:GetAbsOrigin())
-        local fov = Math.AngleFov(angles, engine.GetViewAngles())
-        
-        if fov > 90 then
-            goto continue
-        end
-
-        if fov <= bestFov then
-            bestTarget = player
-            bestFov = fov
-        end
-
-        ::continue::
     end
 
-    if bestTarget then
-        return bestTarget, bestFov
-    else
-        return nil
-    end
-    
-    return bestTarget
+    lastBestTarget = bestTarget
+    lastBestFov = bestFov
+    return bestTarget, bestFov
 end
-
--- Initialize the global wait time
-local waitTime = 0
 
 local function OnCreateMove()
     pLocal = entities.GetLocalPlayer()
@@ -81,42 +76,27 @@ local function OnCreateMove()
     if pLocal then
         local bestTarget, fov = GetBestTarget(pLocal)
         if bestTarget and IsVisible(bestTarget) then
-            -- Target is visible, adjust reaction time based on FOV
-            local reactionTime
-            if fov < 10 then
-                -- FOV is less than 10, set reaction time to 100-200ms
-                reactionTime = math.random(50, 100)
-            else
-                -- FOV is 10 or more, set reaction time to 250-450ms
-                reactionTime = math.random(250, 450)
-            end
+            local reactionTimeRange = fov < 10 and {50, 100} or {250, 450}
+            local reactionTime = math.random(reactionTimeRange[1], reactionTimeRange[2])
 
             if waitTime <= 0 then
-                -- Set the reaction time and wait time
                 gui.SetValue("trigger shoot delay (MS)", reactionTime)
                 waitTime = reactionTime
             else
-                -- Decrease wait time until it reaches 0
                 waitTime = waitTime - 15
             end
         else
-            -- Target is not visible, set reaction time to 400-700ms
             local reactionTime = math.random(400, 700)
-
             if waitTime <= 0 then
-                -- Set the reaction time and wait time
                 gui.SetValue("trigger shoot delay (MS)", reactionTime)
                 waitTime = reactionTime
             else
-                -- Decrease wait time until it reaches 0
                 waitTime = waitTime - 15
             end
         end
     end
 end
 
-
--- Unregister previous callbacks
-callbacks.Unregister("CreateMove", "legit_CreateMove") -- Unregister the "CreateMove" callback
--- Register callbacks
-callbacks.Register("CreateMove", "legit_CreateMove", OnCreateMove) -- Register the "CreateMove" callback
+-- Unregister and register callbacks
+callbacks.Unregister("CreateMove", "legit_CreateMove")
+callbacks.Register("CreateMove", "legit_CreateMove", OnCreateMove)
