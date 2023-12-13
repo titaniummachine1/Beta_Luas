@@ -97,7 +97,7 @@ local function OnCreateMove()
                 waitTime = reactionTime
             else
                 -- Decrease wait time until it reaches 0
-                waitTime = waitTime - 15.1515
+                waitTime = waitTime - 15
             end
         else
             -- Target is not visible, set reaction time to 400-700ms
@@ -109,7 +109,7 @@ local function OnCreateMove()
                 waitTime = reactionTime
             else
                 -- Decrease wait time until it reaches 0
-                waitTime = waitTime - 15.1515
+                waitTime = waitTime - 15
             end
         end
     end
