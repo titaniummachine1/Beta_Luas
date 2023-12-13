@@ -35,61 +35,136 @@ local function NormalizeVector(vec)
     return Vector3(vec.x / length, vec.y / length, vec.z / length)
 end
 
--- Initialize the global wait time and cache the last best target
-local waitTime = 0
-local lastBestTarget = nil
-local lastBestFov = 360
-local lastCheckTime = 0
-local checkInterval = 0.10  -- Time interval in seconds to check for the best target
-
 local function GetBestTarget(me)
-    local currentTime = globals.CurTime()
-    if currentTime - lastCheckTime < checkInterval then
-        return lastBestTarget, lastBestFov
-    end
-
-    lastCheckTime = currentTime
     local players = entities.FindByClass("CTFPlayer")
     local bestTarget = nil
     local bestFov = 360
 
     for _, player in pairs(players) do
-        if player:IsAlive() and not player:IsDormant() and player:GetTeamNumber() ~= me:GetTeamNumber() and (gui.GetValue("ignore cloaked") == 1 and not player:InCond(4)) then
-            local angles = Math.PositionAngles(me:GetAbsOrigin(), player:GetAbsOrigin())
-            local fov = Math.AngleFov(angles, engine.GetViewAngles())
-            
-            if fov <= bestFov and fov <= 90 then
-                bestTarget = player
-                bestFov = fov
-            end
+        if player == nil or not player:IsAlive()
+        or player:IsDormant()
+        or player == me or player:GetTeamNumber() == me:GetTeamNumber()
+        or gui.GetValue("ignore cloaked") == 1 and player:InCond(4) then
+            goto continue
         end
+        
+        local angles = Math.PositionAngles(me:GetAbsOrigin() + Vector3(0,0, 75), player:GetAbsOrigin() + Vector3(0,0, 75))
+        local fov = Math.AngleFov(angles, engine.GetViewAngles())
+        
+        if fov > 90 then
+            goto continue
+        end
+
+        if fov <= bestFov then
+            bestTarget = player
+            bestFov = fov
+        end
+
+        ::continue::
     end
 
-    lastBestTarget = bestTarget
-    lastBestFov = bestFov
-    return bestTarget, bestFov
+    if bestTarget then
+        return bestTarget, bestFov
+    else
+        return nil
+    end
 end
 
-local function OnCreateMove()
+-- Function to generate a random number based on a Gaussian distribution
+local function GaussianRandom(mean, stddev, min, max)
+    local function gaussian()
+        return math.sqrt(-2 * math.log(math.random())) * math.cos(2 * math.pi * math.random())
+    end
+
+    local num = mean + gaussian() * stddev
+    return math.max(min, math.min(max, num))
+end
+
+-- Function to calculate the reaction time based on FOV using Gaussian distribution
+local function CalculateReactionTime(fov)
+    local minTime, maxTime
+    if fov < 10 then
+        minTime, maxTime = 50, 150
+    elseif fov <= 90 then
+        minTime, maxTime = 250, 450
+    else
+        minTime, maxTime = 400, 700
+    end
+    local meanTime = (minTime + maxTime) / 2
+    local stddevTime = (maxTime - meanTime) / 3 -- 3 standard deviations cover 99.7% of the bell curve
+    return GaussianRandom(meanTime, stddevTime, minTime, maxTime)
+end
+
+-- Initialize global variables
+local waitTime = 0
+local lastUpdateTime = 0
+local updateInterval = 0.2  -- Update interval in seconds
+local mistakeShootTime = 0
+local aimingAtHead = false
+
+-- Function to generate a random time for potential mistake shot
+local function RandomMistakeTime()
+    return math.random(30, 70) / 1000  -- Random time between 30ms and 70ms
+end
+
+-- Function to check if the player is aiming at the head
+local function IsAimingAtHead()
+    local me = entities.GetLocalPlayer()
+    local source = me:GetAbsOrigin() + me:GetPropVector("localdata", "m_vecViewOffset[0]")
+    local destination = source + engine.GetViewAngles():Forward() * 1000
+    local trace = engine.TraceLine(source, destination, MASK_SHOT)
+    return trace.hitgroup == 1
+end
+
+local missChance = 30  -- Percentage chance of making a mistake shot
+local shouldMiss = true
+
+local function OnCreateMove(cmd)
+    local currentTime = globals.CurTime()
     pLocal = entities.GetLocalPlayer()
 
     if pLocal then
         local bestTarget, fov = GetBestTarget(pLocal)
-        if bestTarget and IsVisible(bestTarget) then
-            local reactionTimeRange = fov < 10 and {50, 100} or {250, 450}
-            local reactionTime = math.random(reactionTimeRange[1], reactionTimeRange[2])
 
-            if waitTime <= 0 then
+        if bestTarget and IsVisible(bestTarget) then
+            local currentlyAimingAtHead = IsAimingAtHead()
+
+            if currentlyAimingAtHead then
+                if not aimingAtHead then
+                    aimingAtHead = true
+                    mistakeShootTime = 0  -- Reset mistake shoot time
+                end
+            else
+                if aimingAtHead and mistakeShootTime == 0 then
+                    mistakeShootTime = currentTime + RandomMistakeTime()
+                end
+            end
+
+            if waitTime <= 0 or currentTime - lastUpdateTime >= updateInterval then
+                local reactionTime = math.floor(CalculateReactionTime(fov))
                 gui.SetValue("trigger shoot delay (MS)", reactionTime)
                 waitTime = reactionTime
+                lastUpdateTime = currentTime
             else
                 waitTime = waitTime - 15
             end
+
+            -- Check for mistake shot
+            if shouldMiss and not currentlyAimingAtHead and currentTime >= mistakeShootTime and mistakeShootTime > 0 then
+                local randomChance = math.random(100)  -- Generate a random number between 1 and 100
+                if randomChance <= missChance then
+                    -- If random number is less than or equal to miss chance, simulate mistake shot
+                    cmd:SetButtons(cmd:GetButtons() | IN_ATTACK)
+                end
+                aimingAtHead = false  -- Reset aiming at head flag
+                mistakeShootTime = 0  -- Reset mistake time for next potential shot
+            end
         else
-            local reactionTime = math.random(400, 700)
-            if waitTime <= 0 then
+            if waitTime <= 0 or currentTime - lastUpdateTime >= updateInterval then
+                local reactionTime = math.floor(CalculateReactionTime(360))
                 gui.SetValue("trigger shoot delay (MS)", reactionTime)
                 waitTime = reactionTime
+                lastUpdateTime = currentTime
             else
                 waitTime = waitTime - 15
             end
@@ -97,6 +172,10 @@ local function OnCreateMove()
     end
 end
 
--- Unregister and register callbacks
-callbacks.Unregister("CreateMove", "legit_CreateMove")
-callbacks.Register("CreateMove", "legit_CreateMove", OnCreateMove)
+
+
+
+-- Unregister previous callbacks
+callbacks.Unregister("CreateMove", "legit_CreateMove") -- Unregister the "CreateMove" callback
+-- Register callbacks
+callbacks.Register("CreateMove", "legit_CreateMove", OnCreateMove) -- Register the "CreateMove" callback
