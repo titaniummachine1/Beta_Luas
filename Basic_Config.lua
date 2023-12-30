@@ -127,6 +127,6 @@ local function OnUnload()                                -- Called when the scri
     client.Command('play "ui/buttonclickrelease"', true) -- Play the "buttonclickrelease" sound
 end
 
-callbacks.Unregister("Unload", "ASwingPrediction_Unload")                    -- Unregister the "Unload" callback
+callbacks.Unregister("Unload", "Config_Unload")                    -- Unregister the "Unload" callback
 
-callbacks.Register("Unload", "ASwingPrediction_Unload", OnUnload)                         -- Register the "Unload" callback
+callbacks.Register("Unload", "ConfigUnload", OnUnload)                         -- Register the "Unload" callback
