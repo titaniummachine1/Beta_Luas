@@ -44,7 +44,7 @@ local Menu = { -- this is the config that will be loaded every time u load the s
 }
 
 local Lua__fullPath = GetScriptName()
-local Lua__fileName = fullPath:match("\\([^\\]-)$"):gsub("%.lua$", "")
+local Lua__fileName = Lua__fullPath:match("\\([^\\]-)$"):gsub("%.lua$", "")
 
 local function CreateCFG(folder_name, table)
     local success, fullPath = filesystem.CreateDirectory(folder_name)
