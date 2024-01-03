@@ -1,6 +1,9 @@
+--Credit for Muqa1 for original filesystem https://github.com/Muqa1/Muqa-LBOX-pastas/blob/8ada062ddd800dd808c01a187caaa561e72e34e5/Release%20misc%20tools.lua#L709
+--this is only refined version of it.
+
 local Menu = { -- this is the config that will be loaded every time u load the script
 
-    tabs = { -- thsoe are tabs for your menu if needed
+    tabs = { -- those are tabs for your menu if needed
         Main = true,
         Aimbot = false,
         Misc = false,
