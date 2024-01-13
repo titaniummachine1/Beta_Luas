@@ -97,6 +97,9 @@ local function normalizeAngle(offsetNumber)
 end
 
 local function lookAt(from, to, offset)
+    offset = offset or 0
+    if not from or not to then return end
+
     local delta = vector.Subtract(to, from)
     local yaw = math.atan(delta.y, delta.x) * 180 / math.pi
 
@@ -330,21 +333,42 @@ local function propUpdate()
 		::continue::
 	end
 end
-local lastNextPrimaryAttack = 0
-local cycleKeyState = false
+
+-- Returns if the weapon can shoot
+---@param weapon Entity
+---@return boolean
+local function CanShoot(weapon)
+    local lPlayer = entities.GetLocalPlayer()
+    if not lPlayer or weapon:IsMeleeWeapon() then return false end
+
+    local nextPrimaryAttack = weapon:GetPropFloat("LocalActiveWeaponData", "m_flNextPrimaryAttack")
+    local nextAttack = lPlayer:GetPropFloat("bcc_localdata", "m_flNextAttack")
+    if (not nextPrimaryAttack) or (not nextAttack) then return false end
+
+    return (nextPrimaryAttack <= globals.CurTime()) and (nextAttack <= globals.CurTime())
+end
+
+local lastCanShoot = true
+local lastScoped = false
 
 local function checkForCycleYawKeybind()
     local keyDown = isLmaoboxKeybindDown("toggle yaw key")
     local plocal = entities.GetLocalPlayer()
-    local weapon = plocal:GetPropEntity("m_hActiveWeapon")
-    local nextPrimaryAttack = weapon:GetPropFloat("LocalActiveWeaponData", "m_flNextPrimaryAttack")
+    if not plocal then return end
 
-    if (cycleKeyState ~= keyDown and keyDown == true) or (lastNextPrimaryAttack ~= nextPrimaryAttack) then
+    local weapon = plocal:GetPropEntity("m_hActiveWeapon")
+    if not weapon then return end
+
+    local canShoot = CanShoot(weapon)
+    local scoping = plocal:InCond(1)
+
+    -- Check if the keybind is pressed or if there's a transition from being able to shoot to not being able to shoot
+    -- And ensure that scoping state did not change simultaneously
+    if (cycleKeyState ~= keyDown and keyDown == true) or (lastCanShoot and not canShoot and lastScoped == scoping and scoping == true) then
         local victimInfo = getBestTarget(config.cycleYawFOV)
 
         if victimInfo then
             local victim = victimInfo.entity
-
             if not customAngleData[getSteamID(victim)] then
                 setupPlayerAngleData(victim)
             end
@@ -355,8 +379,11 @@ local function checkForCycleYawKeybind()
     end
 
     cycleKeyState = keyDown
-    lastNextPrimaryAttack = nextPrimaryAttack
+    lastCanShoot = canShoot
+    lastScoped = scoping
 end
+
+
 
 
 local function processConfirmation(steamID, data)
