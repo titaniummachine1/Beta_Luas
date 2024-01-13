@@ -3,8 +3,8 @@
 local config = {
 	onlyHeadshots = true,
 	maxMisses = 3,
-	minPriority = 3,
-	cycleYawFOV = 60, -- FOV to use when cycling the yaw through keybind
+	minPriority = 0,
+	cycleYawFOV = 360, -- FOV to use when cycling the yaw through keybind
 
 	yawCycle = {
 		0,
@@ -350,6 +350,7 @@ end
 
 local lastCanShoot = true
 local lastScoped = false
+local lastsequence
 
 local function checkForCycleYawKeybind()
     local keyDown = isLmaoboxKeybindDown("toggle yaw key")
@@ -361,6 +362,7 @@ local function checkForCycleYawKeybind()
 
     local canShoot = CanShoot(weapon)
     local scoping = plocal:InCond(1)
+    local currentSequence = plocal:GetPropInt("m_nSequence")
 
     -- Check if the keybind is pressed or if there's a transition from being able to shoot to not being able to shoot
     -- And ensure that scoping state did not change simultaneously
