@@ -35,8 +35,8 @@ local function CalcStrafe(me)
 end
 
 
+
 -- Constants
-local MAX_SPEED = 320  -- Maximum speed
 local SIMULATION_TICKS = 23  -- Number of ticks for simulation
 local positions = {}
 
@@ -94,10 +94,13 @@ local function UpdateSimulationCache()
     simulationCache.flags = pLocal and pLocal:GetPropInt("m_fFlags") or 0
 end
 
+local PredictionTable = {}
+
 -- Simulates movement for a player over a given number of ticks
 local function SimulatePlayer(me, ticks, strafeAngle)
     -- Update the simulation cache
     UpdateSimulationCache()
+    PredictionTable = {}
 
     -- Get the player's velocity
     local lastV = me:EstimateAbsVelocity()
@@ -149,58 +152,171 @@ local function SimulatePlayer(me, ticks, strafeAngle)
 
         lastP, lastV, lastG = pos, vel, onGround
         Endpos = lastP
+        PredictionTable = {pos = pos, vel = vel, onGround = onGround}
     end
 
     return {pos = Endpos, OnGround = lastG}
 end
 
----@param me WPlayer
-local function CalculateHitboxOffsets(me)
-    local absOrigin = me:GetAbsOrigin()
-    local box1 = me:HitboxSurroundingBox()
-    local min = box1[1]
-    local max = box1[2]
+-- Constants for minimum and maximum speed
+local MIN_SPEED = 10  -- Minimum speed to avoid jittery movements
+local MAX_SPEED = 650 -- Maximum speed the player can move
 
-    local minOffset = min - absOrigin
-    local maxOffset = max - absOrigin
+local MoveDir = Vector3(0,0,0) -- Variable to store the movement direction
 
-    return {minOffset, maxOffset}
+local function NormalizeVector(vector)
+    local length = math.sqrt(vector.x * vector.x + vector.y * vector.y + vector.z * vector.z)
+    if length == 0 then
+        return Vector3(0, 0, 0)
+    else
+        return Vector3(vector.x / length, vector.y / length, vector.z / length)
+    end
+end
+
+-- Function to compute the move direction
+local function ComputeMove(pCmd, a, b)
+    local diff = (b - a)
+    if diff:Length() == 0 then return Vector3(0, 0, 0) end
+
+    local x = diff.x
+    local y = diff.y
+    local vSilent = Vector3(x, y, 0)
+
+    local ang = vSilent:Angles()
+    local cPitch, cYaw, cRoll = pCmd:GetViewAngles()
+    local yaw = math.rad(ang.y - cYaw)
+    local pitch = math.rad(ang.x - cPitch)
+    local move = Vector3(math.cos(yaw) * MAX_SPEED, -math.sin(yaw) * MAX_SPEED, 0)
+
+    return move
+end
+
+-- Function to make the player walk to a destination smoothly
+local function WalkTo(pCmd, pLocal, pDestination)
+    local localPos = pLocal:GetAbsOrigin()
+    local distVector = pDestination - localPos
+    local dist = distVector:Length()
+
+    -- Determine the speed based on the distance
+    local speed = math.max(MIN_SPEED, math.min(MAX_SPEED, dist))
+
+    -- If distance is greater than 1, proceed with walking
+    if dist > 1 then
+        local result = ComputeMove(pCmd, localPos, pDestination)
+
+        -- Scale down the movements based on the calculated speed
+        local scaleFactor = speed / MAX_SPEED
+        pCmd:SetForwardMove(result.x * scaleFactor)
+        pCmd:SetSideMove(result.y * scaleFactor)
+    else
+        pCmd:SetForwardMove(0)
+        pCmd:SetSideMove(0)
+    end
+end
+
+local function GetMoveDir()
+    local moveSpeed = 450 -- Change this to your preferred speed
+    -- Handle side movement keys
+    if input.IsButtonDown(KEY_A) then
+        MoveDir.x = -moveSpeed
+    end
+
+    if input.IsButtonDown(KEY_D) then
+        MoveDir.x = moveSpeed
+    end
+
+    -- Handle forward movement keys
+    if input.IsButtonDown(KEY_W) then
+        MoveDir.y = moveSpeed
+    end
+
+    if input.IsButtonDown(KEY_S) then
+        MoveDir.y = -moveSpeed
+    end
+end
+
+local function FastStop(cmd, OnGround, velocity)
+    if not OnGround then return end -- If the player is not on ground, do nothing
+
+    -- If no keys are held, stop movement immediately by moving in the opposite direction of current velocity
+    if MoveDir:Length() < 10 and velocity:Length() > 10 then
+        local oppositePoint = pLocal:GetAbsOrigin() - velocity
+        WalkTo(cmd, pLocal, oppositePoint)
+        return
+    end
+end
+
+local function FastAccel(cmd, OnGround, velocity)
+    if not OnGround then return end -- If the player is not on ground, do nothing
+
+    -- If no keys are held, stop movement immediately by moving in the opposite direction of current velocity
+    if MoveDir:Length() > 0 then
+        local normalizedMoveDir = NormalizeVector(MoveDir) * 450
+        cmd.forwardmove = normalizedMoveDir.y
+        cmd.sidemove = normalizedMoveDir.x
+        return
+    end
+end
+
+local function isOnGround(player)
+    local pFlags = player:GetPropInt("m_fFlags")
+    return (pFlags & FL_ONGROUND) == 1
 end
 
 local box = {Vector3(), Vector3()}
 local PredPos = Vector3(0, 0, 0)
-local LastGround = false
+local vHitbox1 = { Vector3(-24, -24, 0), Vector3(24, 24, 82) }
+local tickAccel = 800/66.67
+local crouchOffset = 45
 
 local function OnCreateMove(cmd)
-        pLocal = entities.GetLocalPlayer()
+    pLocal = entities.GetLocalPlayer()
     if not pLocal or not pLocal:IsAlive() then return end
-        local pFlags = pLocal:GetPropInt("m_fFlags")
 
-        local velocity = pLocal:EstimateAbsVelocity()
-    --if pLocal:EstimateAbsVelocity().z > -649 then return end
-        vHitbox = CalculateHitboxOffsets(pLocal)
-        local strafeAngle = CalcStrafe(pLocal)
-         -- Predict the player'
-        local predData = SimulatePlayer(pLocal, 2, strafeAngle)
-    if not predData then return nil end
-        PredPos = predData.pos
-        box = {PredPos + vHitbox[1] , PredPos + vHitbox[2]}
+    local onGround = isOnGround(pLocal)
+    local m_vecViewOffsetZ = math.floor(pLocal:GetPropVector("m_vecViewOffset[0]").z)
 
-        if (pFlags & FL_ONGROUND) == 1 then
-            if LastGround then
-                LastGround = false
-                cmd:SetButtons(cmd.buttons | (IN_JUMP))
+    local vel = pLocal:EstimateAbsVelocity()
+    MoveDir = Vector3(0,0,0)
+    GetMoveDir()
+
+    FastStop(cmd, OnGround, vel)
+    FastAccel(cmd, OnGround, vel)
+
+    if onGround then 
+        if input.IsButtonDown(KEY_SPACE) then
+            if m_vecViewOffsetZ <= 67 then  -- Fully crouched
+                cmd:SetButtons(cmd.buttons & (~IN_DUCK))  -- Uncrouch
+                cmd:SetButtons(cmd.buttons | IN_JUMP)     -- Jump
+            else
+                cmd:SetButtons(cmd.buttons & (~IN_JUMP))
+                cmd:SetButtons(cmd.buttons | IN_DUCK)
             end
-            return
-        end --disable when airborne
-
-        if predData.OnGround then
-            LastGround = true
-            cmd:SetButtons(cmd.buttons & (~IN_DUCK))
-        else
-            cmd.buttons = cmd.buttons | IN_DUCK
         end
+        return
+    end
+
+    -- The rest of your logic when not on ground
+    if vel.z < 0 then return end
+
+    local strafeAngle = CalcStrafe(pLocal)
+
+    -- Predict the player's position
+    local predData = SimulatePlayer(pLocal, 1, strafeAngle)
+    if not predData then return end
+
+    PredPos = predData.pos
+
+    -- Jumpbug logic
+    if not predData.OnGround and vel.z < 0 then
+        cmd:SetButtons(cmd.buttons & (~IN_DUCK))
+        cmd:SetButtons(cmd.buttons | IN_JUMP)
+    else
+        cmd:SetButtons(cmd.buttons | IN_DUCK)
+    end
 end
+
+
 
 local function OnDraw()
     -- Inside your OnDraw function
@@ -274,8 +390,8 @@ end
 callbacks.Unregister("CreateMove", "jumpbughanddd")
 callbacks.Register("CreateMove", "jumpbughanddd", OnCreateMove)
 
-callbacks.Unregister("Draw", "accuratemoveD.Draw")
-callbacks.Register("Draw", "accuratemoveD", OnDraw)
+--[[callbacks.Unregister("Draw", "accuratemoveD.Draw")
+callbacks.Register("Draw", "accuratemoveD", OnDraw)]]
 
 
 
