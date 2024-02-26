@@ -155,20 +155,6 @@ local function SimulatePlayer(me, ticks, strafeAngle)
     return {pos = Endpos, OnGround = lastG}
 end
 
-local function isOnGround(player)
-    local pFlags = player:GetPropInt("m_fFlags")
-    return (pFlags & FL_ONGROUND) == 1
-end
-
-local PredPos = Vector3(0, 0, 0)
-local JumpPeekPos = Vector3(0, 0, 0)
-local vHitbox1 = { Vector3(-24, -24, 0), Vector3(24, 24, 82) }
-local crouchOffset = 45
-local ShouldJump = false
-
-local gravityPerTick = 800 / 66.67
-local jumpForce = 277 -- Initial vertical boost for a duck jump
-
 -- Function to calculate the magnitude (length) of a vector
 local function VectorLength(vector)
     return vector:Length()
@@ -179,6 +165,58 @@ local function NormalizeVector(vector)
     local length = VectorLength(vector)
     return Vector3(vector.x / length, vector.y / length, vector.z / length)
 end
+
+local function SlideForwardTrace(initialPosition, direction, remainingDistance, JumpPeekPerfectPos)
+    local currentPosition = Vector3(initialPosition.x, initialPosition.y, initialPosition.z)
+    local directionNormalized = NormalizeVector(direction)
+    local proposedPosition = currentPosition + directionNormalized * remainingDistance
+
+    -- Perform a trace to check for collision between the current position and the proposed position
+    local trace = engine.TraceHull(initialPosition, JumpPeekPerfectPos, vHitbox[1], vHitbox[2], MASK_PLAYERSOLID_BRUSHONLY)
+
+    -- If a collision is detected, adjust the velocity to simulate sliding along the wall
+    if trace.fraction < 1.0 then
+        -- The trace.HitNormal represents the normal vector of the collision surface
+        local normal = trace.plane
+
+        -- Calculate the angle between the direction vector and the normal of the collision surface
+        local angle = math.deg(math.acos(normal:Dot(Vector3(0, 0, 1))))
+
+         -- Adjust velocity if angle is greater than forward collision angle
+        if angle > FORWARD_COLLISION_ANGLE then
+            -- The wall is steep, adjust velocity to prevent moving into the wall
+            local dot = direction:Dot(normal)
+            local vel = direction - normal * dot
+        end
+        if angle > FORWARD_COLLISION_ANGLE then
+            -- If the collision angle is greater than the specified max, calculate slide direction
+            local slideDirection = directionNormalized - normal * (directionNormalized:Dot(normal) * 2)
+            local slideDistance = remainingDistance * (1 - trace.fraction) -- Remaining distance after collision
+            proposedPosition = currentPosition + (trace.endpos - currentPosition) * trace.fraction + NormalizeVector(slideDirection) * slideDistance
+
+            -- Perform a second trace for the slide
+            trace = engine.TraceHull(currentPosition, proposedPosition, vHitbox[1], vHitbox[2], MASK_PLAYERSOLID_BRUSHONLY)
+        else
+            -- If the collision angle is not steep enough, stop at the collision point
+            proposedPosition = currentPosition + (trace.endpos - currentPosition) * trace.fraction
+        end
+    end
+    local endpos = proposedPosition
+    local fraction = trace.fraction
+
+    return endpos, fraction
+end
+
+local function isOnGround(player)
+    local pFlags = player:GetPropInt("m_fFlags")
+    return (pFlags & FL_ONGROUND) == 1
+end
+
+local PredPos = Vector3(0, 0, 0)
+local JumpPeekPos = Vector3(0, 0, 0)
+local vHitbox1 = { Vector3(-24, -24, 0), Vector3(24, 24, 82) }
+local crouchOffset = 45
+local ShouldJump = false
 
 local gravity = 800 --gravity per second
 local jumpForce = 277 -- Initial vertical boost for a duck jump
@@ -226,53 +264,63 @@ end
 local MaxJumpHeight = Vector3(0, 0, 72)
 
 local function OnCreateMove(cmd)
+    -- Get the local player
     pLocal = entities.GetLocalPlayer()
+
+    -- If the local player doesn't exist or isn't alive, exit the function
     if not pLocal or not pLocal:IsAlive() then return end
 
+    -- Check if the player is on the ground
     local onGround = isOnGround(pLocal)
+
+    -- Get the player's view offset and adjust the hitbox height
     local m_vecViewOffsetZ = math.floor(pLocal:GetPropVector("m_vecViewOffset[0]").z)
     vHitbox[2].z = m_vecViewOffsetZ + 12
 
+    -- Get the player's position and velocity
     local pLocalPos = pLocal:GetAbsOrigin()
-
     local vel = pLocal:EstimateAbsVelocity()
 
-    -- Get the current view angles
+    -- If the player's position or velocity is invalid, exit the function
+    if not pLocalPos or not vel then return end
+
+    -- Get the player's view angles
     local viewAngles = engine.GetViewAngles()
 
-    -- Combine forward and sideward movements into a single vector
+    -- Calculate the player's movement direction
     local moveDir = Vector3(cmd.forwardmove, -cmd.sidemove, 0)
-
-    -- Rotate the moveDir vector by the view angles to get the inputs relative to the view angles
     local rotatedMoveDir = RotateVectorByYaw(moveDir, viewAngles.yaw)
-
-    -- Normalize the movement direction
     local normalizedMoveDir = NormalizeVector(rotatedMoveDir)
 
-    if normalizedMoveDir:Length() > 0 then
-        if vel:Length() < 50 then
-            local newVelMagnitude = math.max(1, vel:Length())
-            vel = normalizedMoveDir * newVelMagnitude
-        end
+    -- Normalize moveDir if its length isn't 0, then ensure velocity matches the intended movement direction
+    if moveDir:Length() > 0 then
+        -- Calculate the intended speed based on input magnitude. This could be a fixed value or based on current conditions like player's max speed.
+        local intendedSpeed = math.max(1, vel:Length()) -- Ensure the speed is at least 1
+
+        -- Adjust the player's velocity to match the intended direction and speed
+        vel = normalizedMoveDir * intendedSpeed
     else
+        -- If there's no input, you might want to handle the case where the player should stop or maintain current velocity
         vel = Vector3(0, 0, 0)
     end
 
-    if not pLocalPos or not vel then return end -- Return if the local player's position or velocity is invalid
-
-
-    --smartjump logic
-    if onGround then --why jump when midair?
+    -- Smart jump logic
+    if onGround then
         local JumpPeekPerfectPos, JumpDirection = GetJumpPeak(vel, pLocalPos)
         JumpPeekPos = JumpPeekPerfectPos
 
-        local traceforward = engine.TraceHull(pLocalPos, JumpPeekPerfectPos, vHitbox[1], vHitbox[2], MASK_PLAYERSOLID_BRUSHONLY)
-        if traceforward.fraction < 1 then
-            local startrace = traceforward.endpos + MaxJumpHeight + JumpDirection
-            local endtrace = traceforward.endpos + JumpDirection
-            traceDown = engine.TraceHull(startrace, endtrace, vHitbox[1], vHitbox[2], MASK_PLAYERSOLID_BRUSHONLY)
+        --local traceforward = engine.TraceHull(pLocalPos, JumpPeekPerfectPos, vHitbox[1], vHitbox[2], MASK_PLAYERSOLID_BRUSHONLY)
+        local trace = engine.TraceHull(pLocalPos, JumpPeekPos, vHitbox[1], vHitbox[2], MASK_PLAYERSOLID_BRUSHONLY)
+        JumpPeekPos = trace.endpos
+
+        if trace.fraction < 1 then
+            --local RemainingDistace = (JumpPeekPerfectPos - pLocalPos):Length() * tracefraction
+            local startrace = trace.endpos + MaxJumpHeight + JumpDirection
+            local endtrace = trace.endpos + JumpDirection
+            local traceDown = engine.TraceHull(startrace, endtrace, vHitbox[1], vHitbox[2], MASK_PLAYERSOLID_BRUSHONLY)
             JumpPeekPos = traceDown.endpos
-            if traceDown.fraction > 0 and traceDown.fraction < 0.75 then -- if 0 then in wall if more then 0.75 then able to step over it no need to jump then
+
+            if traceDown.fraction > 0 and traceDown.fraction < 0.75 then
                 ShouldJump = true
             end
         end
@@ -280,17 +328,9 @@ local function OnCreateMove(cmd)
         ShouldJump = false
     end
 
-
+    -- Handle jumping and crouching
     if onGround then 
-        if input.IsButtonDown(KEY_SPACE) then
-            if m_vecViewOffsetZ <= 67 then  -- Fully crouched
-                cmd:SetButtons(cmd.buttons & (~IN_DUCK))  -- Uncrouch
-                cmd:SetButtons(cmd.buttons | IN_JUMP)     -- Jump
-            else
-                cmd:SetButtons(cmd.buttons & (~IN_JUMP))
-                cmd:SetButtons(cmd.buttons | IN_DUCK)
-            end
-        elseif ShouldJump then
+        if input.IsButtonDown(KEY_SPACE) or ShouldJump then
             if m_vecViewOffsetZ <= 67 then  -- Fully crouched
                 cmd:SetButtons(cmd.buttons & (~IN_DUCK))  -- Uncrouch
                 cmd:SetButtons(cmd.buttons | IN_JUMP)     -- Jump
@@ -302,9 +342,10 @@ local function OnCreateMove(cmd)
         return
     end
 
-    -- The rest of your logic when not on ground
+    -- If the player is falling, exit the function
     if vel.z < 0 then return end
 
+    -- Calculate the strafe angle
     local strafeAngle = CalcStrafe(pLocal)
 
     -- Predict the player's position
@@ -340,8 +381,8 @@ local function OnDraw()
             end
 
                 -- Calculate min and max points
-                local minPoint = vHitbox[1] + PredPos
-                local maxPoint = vHitbox[2] + PredPos
+                local minPoint = vHitbox[1] + JumpPeekPos
+                local maxPoint = vHitbox[2] + JumpPeekPos
 
                 -- Calculate vertices of the AABB
                 -- Assuming minPoint and maxPoint are the minimum and maximum points of the AABB:
