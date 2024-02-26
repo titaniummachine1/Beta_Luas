@@ -399,5 +399,5 @@ end
 callbacks.Unregister("CreateMove", "jumpbughanddd")
 callbacks.Register("CreateMove", "jumpbughanddd", OnCreateMove)
 
-callbacks.Unregister("Draw", "accuratemoveD.Draw")
-callbacks.Register("Draw", "accuratemoveD", OnDraw)
+--callbacks.Unregister("Draw", "accuratemoveD.Draw")
+--callbacks.Register("Draw", "accuratemoveD", OnDraw)
