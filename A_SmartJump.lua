@@ -175,7 +175,7 @@ local function VectorLength(vector)
 end
 
 -- Function to normalize a vector
-local function Normalize(vector)
+local function NormalizeVector(vector)
     local length = VectorLength(vector)
     return Vector3(vector.x / length, vector.y / length, vector.z / length)
 end
@@ -207,11 +207,21 @@ local function GetJumpPeak(initialVelocityVector, startPos)
     --local distanceToPeak = (peakPosVector - startPos):Length()
 
     -- Calculate the direction from the start position to the peak position
-    local directionToPeak = Normalize(peakPosVector - startPos)
+    local directionToPeak = NormalizeVector(peakPosVector - startPos)
 
     return peakPosVector, directionToPeak
 end
 
+local function RotateVectorByYaw(vector, yaw)
+    local rad = math.rad(yaw)
+    local cos, sin = math.cos(rad), math.sin(rad)
+
+    return Vector3(
+        cos * vector.x - sin * vector.y,
+        sin * vector.x + cos * vector.y,
+        vector.z
+    )
+end
 
 local MaxJumpHeight = Vector3(0, 0, 72)
 
@@ -224,9 +234,32 @@ local function OnCreateMove(cmd)
     vHitbox[2].z = m_vecViewOffsetZ + 12
 
     local pLocalPos = pLocal:GetAbsOrigin()
+
     local vel = pLocal:EstimateAbsVelocity()
 
+    -- Get the current view angles
+    local viewAngles = engine.GetViewAngles()
+
+    -- Combine forward and sideward movements into a single vector
+    local moveDir = Vector3(cmd.forwardmove, -cmd.sidemove, 0)
+
+    -- Rotate the moveDir vector by the view angles to get the inputs relative to the view angles
+    local rotatedMoveDir = RotateVectorByYaw(moveDir, viewAngles.yaw)
+
+    -- Normalize the movement direction
+    local normalizedMoveDir = NormalizeVector(rotatedMoveDir)
+
+    if normalizedMoveDir:Length() > 0 then
+        if vel:Length() < 50 then
+            local newVelMagnitude = math.max(1, vel:Length())
+            vel = normalizedMoveDir * newVelMagnitude
+        end
+    else
+        vel = Vector3(0, 0, 0)
+    end
+
     if not pLocalPos or not vel then return end -- Return if the local player's position or velocity is invalid
+
 
     --smartjump logic
     if onGround then --why jump when midair?
