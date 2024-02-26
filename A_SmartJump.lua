@@ -91,6 +91,7 @@ local function UpdateSimulationCache()
 end
 
 local PredictionTable = {}
+local fFalse = function () return false end
 
 -- Simulates movement for a player over a given number of ticks
 local function SimulatePlayer(me, ticks, strafeAngle)
@@ -176,14 +177,10 @@ end
 -- Function to normalize a vector
 local function Normalize(vector)
     local length = VectorLength(vector)
-    return {
-        x = vector.x / length,
-        y = vector.y / length,
-        z = vector.z / length
-    }
+    return Vector3(vector.x / length, vector.y / length, vector.z / length)
 end
 
-local gravityPerTick = 800 / 66.67
+local gravity = 800 --gravity per second
 local jumpForce = 277 -- Initial vertical boost for a duck jump
 
 -- Assuming VectorLength and Normalize are defined elsewhere in your code,
@@ -191,7 +188,7 @@ local jumpForce = 277 -- Initial vertical boost for a duck jump
 
 local function GetJumpPeak(initialVelocityVector, startPos)
     -- Calculate the time to reach the jump peak
-    local timeToPeak = jumpForce / gravityPerTick
+    local timeToPeak = jumpForce / gravity
 
     -- Directly use the initial velocity vector without normalizing,
     -- as we're interested in the actual movement direction and magnitude
@@ -204,16 +201,19 @@ local function GetJumpPeak(initialVelocityVector, startPos)
 
     -- Assuming a custom Vector3 creation method to handle table to Vector3 conversion
     local peakPosVector = Vector3(peakPosition.x, peakPosition.y, peakPosition.z)
-    
+
     -- Calculate the distance from the start position to the peak position
     -- Assuming startPos is already a Vector3, otherwise convert it similarly to peakPosVector
-    local distanceToPeak = (peakPosVector - startPos):Length()
+    --local distanceToPeak = (peakPosVector - startPos):Length()
 
-    return distanceToPeak, peakPosVector
+    -- Calculate the direction from the start position to the peak position
+    local directionToPeak = Normalize(peakPosVector - startPos)
+
+    return peakPosVector, directionToPeak
 end
 
 
-
+local MaxJumpHeight = Vector3(0, 0, 72)
 
 local function OnCreateMove(cmd)
     pLocal = entities.GetLocalPlayer()
@@ -229,8 +229,24 @@ local function OnCreateMove(cmd)
     if not pLocalPos or not vel then return end -- Return if the local player's position or velocity is invalid
 
     --smartjump logic
-    local PerfectJumpDist, JumpPeekPerfectPos = GetJumpPeak(vel, pLocalPos)
-    print(PerfectJumpDist, JumpPeekPerfectPos)
+    if onGround then --why jump when midair?
+        local JumpPeekPerfectPos, JumpDirection = GetJumpPeak(vel, pLocalPos)
+        JumpPeekPos = JumpPeekPerfectPos
+
+        local traceforward = engine.TraceHull(pLocalPos, JumpPeekPerfectPos, vHitbox[1], vHitbox[2], MASK_PLAYERSOLID_BRUSHONLY)
+        if traceforward.fraction < 1 then
+            local startrace = traceforward.endpos + MaxJumpHeight + JumpDirection
+            local endtrace = traceforward.endpos + JumpDirection
+            traceDown = engine.TraceHull(startrace, endtrace, vHitbox[1], vHitbox[2], MASK_PLAYERSOLID_BRUSHONLY)
+            JumpPeekPos = traceDown.endpos
+            if traceDown.fraction > 0 and traceDown.fraction < 0.75 then -- if 0 then in wall if more then 0.75 then able to step over it no need to jump then
+                ShouldJump = true
+            end
+        end
+    else
+        ShouldJump = false
+    end
+
 
     if onGround then 
         if input.IsButtonDown(KEY_SPACE) then
