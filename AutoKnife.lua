@@ -101,7 +101,6 @@ local function UpdateTarget()
             end
         end
     end
-
     return bestTargetDetails
 end
 
@@ -276,22 +275,44 @@ end
 local pLocalFuture = Vector3(0,0,0)
 local time = Conversion.Time_to_Ticks(0.67) --switch to knife speed or 44 - 45 ticks
 local lastslot = "slot1"
+local tick_count = 0
+
+local function knifetimer()
+    --if we dont need knife we need to switch
+    tick_count = tick_count + 1
+    print(tick_count)
+    if tick_count > 66 then 
+        client.Command("slot1", true)
+        tick_count = 0 
+        return
+    end
+end
 
 local function OnCreateMove(cmd)
     if UpdateLocalPlayerCache() == false then return end  -- Update local player data every tick or return
     local pWeapon = pLocal:GetPropEntity("m_hActiveWeapon")
     if not pWeapon then return end  -- Return if the local player doesn't have an active weaponend
 
+    local TargetPlayer1 = nil
     if pWeapon:IsMeleeWeapon() == true then
         if killed then
             client.Command("slot1", true)
             killed = false
+        else
+            TargetPlayer1 = UpdateTarget()
+            if not TargetPlayer then
+                knifetimer()
+                return
+            end
         end
         return 
     end -- Return if the local player's active weapon is not a melee weapon
 
-    TargetPlayer = UpdateTarget()
-    if not TargetPlayer then return end
+    TargetPlayer = TargetPlayer1 or UpdateTarget()
+    if not TargetPlayer then
+        return
+    end
+
     CalcStrafe()
 
     -- Calculate latency in seconds
@@ -340,7 +361,6 @@ local function OnCreateMove(cmd)
     local canBackstab = CheckBackstab(pLocalFuture)
     if canBackstab then
         client.Command("slot3", true)
-        lastslot = "slot1"
     end
 end
 
