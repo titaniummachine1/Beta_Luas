@@ -16,6 +16,9 @@ local Helpers = lnxLib.TF2.Helpers
 local Prediction = lnxLib.TF2.Prediction
 local Fonts = lnxLib.UI.FontslnxLib
 
+--optins
+local MaxFov = 90
+
 local pLocal = entities.GetLocalPlayer()
 local pLocalPos = Vector3(0,0,0)
 local pLocalViewPos = pLocalPos + Vector3(0,0,75) 
@@ -61,6 +64,26 @@ local function CalcStrafe()
     end
 end
 
+-- Calculates the angle between two vectors
+---@param source Vector3
+---@param dest Vector3
+---@return EulerAngles angles
+local function PositionAngles(source, dest)
+    local delta = source - dest
+
+    local pitch = math.atan(delta.z / delta:Length2D()) * M_RADPI
+    local yaw = math.atan(delta.y / delta.x) * M_RADPI
+
+    if delta.x >= 0 then
+        yaw = yaw + 180
+    end
+
+    if isNaN(pitch) then pitch = 0 end
+    if isNaN(yaw) then yaw = 0 end
+
+    return EulerAngles(pitch, yaw, 0)
+end
+
 local function CalculateBackwardVector(player)
     local forwardAngle = player:GetPropVector("tfnonlocaldata", "m_angEyeAngles[0]")
     local pitch = math.rad(forwardAngle.x)
@@ -86,17 +109,22 @@ local function UpdateTarget()
 
                 -- Check if the player is within the attack range
                 if distance < bestDistance then
-                    bestDistance = distance
-                    bestTargetDetails = {
-                        idx = playerIndex,
-                        entity = player,
-                        Pos = playerPos,
-                        FPos = playerPos + player:EstimateAbsVelocity() * 0.015,
-                        viewOffset = player:GetPropVector("localdata", "m_vecViewOffset[0]"),
-                        hitboxPos = (player:GetHitboxes()[4][1] + player:GetHitboxes()[4][2]) * 0.5,
-                        hitboxForward = CalculateBackwardVector(player),
-                        --backPoint = CalculateBackPoint(player)
-                    }
+                    local angles = Math.PositionAngles(pLocalViewPos, playerPos + Vector3(0, 0, 75))
+                    local fov = Math.AngleFov(engine.GetViewAngles(), angles)
+
+                    if fov <= MaxFov then
+                        bestDistance = distance
+                        bestTargetDetails = {
+                            idx = playerIndex,
+                            entity = player,
+                            Pos = playerPos,
+                            FPos = playerPos + player:EstimateAbsVelocity() * 0.015,
+                            viewOffset = player:GetPropVector("localdata", "m_vecViewOffset[0]"),
+                            hitboxPos = (player:GetHitboxes()[4][1] + player:GetHitboxes()[4][2]) * 0.5,
+                            hitboxForward = CalculateBackwardVector(player),
+                            --backPoint = CalculateBackPoint(player)
+                        }
+                    end
                 end
             end
         end
@@ -276,12 +304,13 @@ local pLocalFuture = Vector3(0,0,0)
 local time = Conversion.Time_to_Ticks(0.67) --switch to knife speed or 44 - 45 ticks
 local lastslot = "slot1"
 local tick_count = 0
+local switchbackdealy = 66
 
 local function knifetimer()
     --if we dont need knife we need to switch
     tick_count = tick_count + 1
     print(tick_count)
-    if tick_count > 66 then 
+    if tick_count > switchbackdealy then
         client.Command("slot1", true)
         tick_count = 0 
         return
@@ -293,17 +322,13 @@ local function OnCreateMove(cmd)
     local pWeapon = pLocal:GetPropEntity("m_hActiveWeapon")
     if not pWeapon then return end  -- Return if the local player doesn't have an active weaponend
 
-    local TargetPlayer1 = nil
     if pWeapon:IsMeleeWeapon() == true then
         if killed then
             client.Command("slot1", true)
             killed = false
         else
-            TargetPlayer1 = UpdateTarget()
-            if not TargetPlayer then
-                knifetimer()
-                return
-            end
+            switchbackdealy = 66
+            knifetimer()
         end
         return 
     end -- Return if the local player's active weapon is not a melee weapon
@@ -360,6 +385,7 @@ local function OnCreateMove(cmd)
 
     local canBackstab = CheckBackstab(pLocalFuture)
     if canBackstab then
+        tick_count = 0
         client.Command("slot3", true)
     end
 end
