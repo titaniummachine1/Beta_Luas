@@ -1,4 +1,5 @@
---[[ Movement Recorder ]]
+--[[ Movement Recorder ]]--
+--[[Credits to:lnx for lnxlib,menu and the base of the recorder]]
 
 ---@type boolean, lnxLib
 local libLoaded, lnxLib = pcall(require, "lnxLib")
