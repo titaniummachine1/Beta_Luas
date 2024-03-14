@@ -88,14 +88,14 @@ local function OnCreateMove(Cmd)
     if not pLocal and pLocal:IsAlive() then return end
     pLocalPos = pLocal:GetAbsOrigin()
 
-    if Cmd:GetForwardMove() ~= 0 or Cmd:GetSideMove() ~= 0 then return end --movement bypass
-
     if input.IsButtonDown(KEY_LSHIFT) then
         returnVec = entities.GetLocalPlayer():GetAbsOrigin()
         PosPlaced = false
     else
         PosPlaced = true
     end
+
+    if Cmd:GetForwardMove() ~= 0 or Cmd:GetSideMove() ~= 0 then return end --movement bypass
 
     if PosPlaced then
         WalkTo(Cmd, pLocal, returnVec)
