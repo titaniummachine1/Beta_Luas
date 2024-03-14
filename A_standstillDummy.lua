@@ -5,7 +5,6 @@
 ]]
 
 local MaxInputStrength = 450
-local TICK_RATE = 66
 
 local function Normalize(vec)
     local length = math.sqrt(vec.x * vec.x + vec.y * vec.y + vec.z * vec.z)
@@ -13,7 +12,7 @@ local function Normalize(vec)
 end
 
 -- Function to compute the move direction
-local function ComputeMove(pCmd, a, b)
+local function ComputeMove(Cmd, a, b)
     local diff = (b - a)
     if diff:Length() == 0 then return Vector3(0, 0, 0) end
 
@@ -22,7 +21,7 @@ local function ComputeMove(pCmd, a, b)
     local vSilent = Vector3(x, y, 0)
 
     local ang = vSilent:Angles()
-    local cPitch, cYaw, cRoll = pCmd:GetViewAngles()
+    local cPitch, cYaw, cRoll = Cmd:GetViewAngles()
     local yaw = math.rad(ang.y - cYaw)
     local pitch = math.rad(ang.x - cPitch)
     local move = Vector3(math.cos(yaw), -math.sin(yaw), -math.cos(pitch))
@@ -35,49 +34,63 @@ function Scale(vector, factor)
     return {x = vector.x * factor, y = vector.y * factor}
 end
 
-function WalkTo(pCmd, pLocal, pDestination)
+function WalkTo(Cmd, pLocal, pDestination)
     local StartPos = pLocal:GetAbsOrigin()
-    local distance = (pDestination - StartPos):Length()
-    local velocity = pLocal:EstimateAbsVelocity():Length()
-    -- Calculate distance that would be covered in one tick at the current speed
-    local SlowDownDistance = math.max(10, math.min(velocity / TICK_RATE, MaxInputStrength))
-    local MaxSpeed = pLocal:GetPropFloat("m_flMaxspeed")  -- Max speed for the class
-    local Friction = pLocal:GetPropFloat("m_flFriction")  -- Friction for the class
+    local distVector = pDestination - StartPos
+    local distance = distVector:Length()
+    local velocityVector = pLocal:EstimateAbsVelocity()
+    local velocity = velocityVector:Length()
+    local TICK_RATE = globals.TickInterval()
+    local MaxSpeed = pLocal:GetPropFloat("m_flMaxspeed")
+    local Friction = pLocal:GetPropFloat("m_flFriction")
     local ScaleFactor = MaxSpeed / MaxInputStrength
 
-    -- Apply the movement commands
-    if distance < SlowDownDistance then
-        -- Calculate the needed speed adjustment
+    local stoppingDistance = math.max(10, math.min(velocity, MaxInputStrength)) -- Calculate dynamic stopping distance
+
+    -- Compute the movement input needed to go towards the target
+    local Result = ComputeMove(Cmd, StartPos, pDestination)
+
+    if distance <= stoppingDistance and distance > 0.1 then
+        -- Calculate the fastest possible speed we can go to the target without overshooting
+        local decelerationRate = Friction * TICK_RATE
+        local neededDeceleration = velocity^2 / (2 * distance)
         local adjustedSpeed
-        if distance < SlowDownDistance then
-            -- Decelerate if within stopping distance
-            adjustedSpeed = math.max(velocity - Friction, 0)
+
+        -- If the needed deceleration is greater than the deceleration rate, we need to slow down
+        if neededDeceleration > decelerationRate then
+            adjustedSpeed = velocity - decelerationRate
         else
-            -- Accelerate if not within stopping distance and below max speed
-            adjustedSpeed = math.min(velocity + Friction, MaxSpeed)
+            -- Otherwise, we can speed up, but not beyond the maximum speed
+            adjustedSpeed = math.min(velocity + decelerationRate, MaxSpeed)
         end
 
-        -- Adjust speed to not overshoot the target, convert to input strength, then scale
-        adjustedSpeed = math.min(adjustedSpeed, distance)
-        local inputStrength = adjustedSpeed / ScaleFactor
+        function round(num, numDecimalPlaces)
+            local mult = 10^(numDecimalPlaces or 0)
+            return math.floor(num * mult + 0.5) / mult
+        end
 
-        -- Scale the normalized result by the adjusted input strength
-        -- Compute the movement input needed to go towards the target
-        local Result = ComputeMove(pCmd, StartPos, pDestination)
+        local correctionFactor = 0.0000003576279 -- Adjust this value as needed
+        local inputStrength = ((1 / MaxSpeed) * MaxInputStrength) + correctionFactor
+        inputStrength = math.max(1, math.min(inputStrength, 450)) -- Ensure inputStrength is within the range [1, 450]
+        inputStrength = round(inputStrength, 10) -- Round to 10 decimal places
 
-        local scaledResult = Vector3()
-        scaledResult.x = Result.x * inputStrength
-        scaledResult.y = Result.y * inputStrength
+        local adjustedSpeed = math.min(velocity / MaxSpeed, 1)
+        inputStrength = adjustedSpeed * MaxInputStrength
 
-        pCmd:SetForwardMove(scaledResult.x)
-        pCmd:SetSideMove(scaledResult.y)
+        -- Scale the input based on the adjusted speed
+        Cmd:SetForwardMove(Result.x * inputStrength)
+        Cmd:SetSideMove(Result.y * inputStrength)
+    elseif distance > stoppingDistance then
+        -- If outside the stopping distance, move towards the target at maximum possible input strength
+        Cmd:SetForwardMove(Result.x * MaxInputStrength)
+        Cmd:SetSideMove(Result.y * MaxInputStrength)
     else
-        local Result = ComputeMove(pCmd, StartPos, pDestination)
-
-        pCmd:SetForwardMove(Result.x * MaxInputStrength)
-        pCmd:SetSideMove(Result.y * MaxInputStrength)
+        Cmd:SetForwardMove(0)
+        Cmd:SetSideMove(0)
     end
 end
+
+
 
 local returnVec = entities.GetLocalPlayer():GetAbsOrigin()
 local pLocalPos = Vector3()
