@@ -1,5 +1,18 @@
 --credit to https://github.com/daily3014/lbox/blob/main/resolver.lua
 --script have been fixed to auto cycle the angles and uses only 3 main ones offsets from direct direction at you
+---@type boolean, LNXlib
+local libLoaded, Lib = pcall(require, "LNXlib")
+assert(libLoaded, "LNXlib not found, please install it!")
+assert(Lib.GetVersion() >= 1, "LNXlib version is too old, please update it!")
+
+-- Import utility functions
+Math = Lib.Utils.Math
+Conversion = Lib.Utils.Conversion
+Input = Lib.Utils.Input
+Commands = Lib.Utils.Commands
+Timer = Lib.Utils.Timer
+Conversion = Lib.Utils.Conversion
+
 local config = {
 	onlyHeadshots = true,
 	maxMisses = 3,
@@ -20,6 +33,7 @@ local awaitingConfirmation = {}
 local misses = {}
 local headshotWeapons = {[17] = true, [43] = true}
 local cycleKeyState = false
+local plocal = entities.GetLocalPlayer()
 
 local M_RADPI = 180 / math.pi
 
@@ -153,14 +167,58 @@ local function cycleYaw(data, step)
 	announceResolve(data)
 end
 
-local function tryingToShoot(cmd)
-	if cmd and (cmd.buttons ~ IN_ATTACK) == 0 then
-		return false
-	end
+local LastAttackTick = 0
+local AttackHappened = false
 
+function GetLastAttackTime(cmd, weapon)
+    local TickCount = globals.TickCount()
+    local NextAttackTime = Conversion.Time_to_Ticks(weapon:GetPropFloat("m_flLastFireTime") or 0)
+    --return (nextPrimaryAttack <= G.CurTime()) and (nextAttack <= G.CurTime())
+    if AttackHappened == false and NextAttackTime >= TickCount then
+        LastAttackTick = TickCount
+        --print(LastAttackTick)
+        AttackHappened = true
+        return LastAttackTick, AttackHappened
+    elseif NextAttackTime < TickCount and AttackHappened == true then
+        AttackHappened = false
+    end
+    return LastAttackTick, false
+end
+
+local lastammocount = 0
+local attacked = false
+
+local function tryingToShoot(cmd)
 	if gui.GetValue("aim position") == "body" then
 		return false
 	end
+
+	local weapon = plocal:GetPropEntity("m_hActiveWeapon")
+	local ammoTable = plocal:GetPropDataTableInt("localdata", "m_iAmmo")
+	LastAttackTick, attacked = GetLastAttackTime(cmd, weapon)
+	if LastAttackTick == tick_count then
+		--check if ammo decreased
+		local CurrentAmmo = ammoTable[2]
+		if CurrentAmmo < lastammocount then
+			attacked = true
+		else
+			attacked = false
+		end
+
+		--check if button pressed
+		if cmd:GetButtons() & IN_ATTACK == 1 then
+			attacked = true
+		end
+
+		--check if attacked
+		if attacked then
+			if lastAttackTime == LastAttackTime then
+				return false
+			end
+			return true
+		end
+	end
+	lastammocount = CurrentAmmo
 
 	if gui.GetValue("aim bot") then
 		local keyMode = gui.GetValue("aim key mode")
@@ -174,6 +232,7 @@ local function tryingToShoot(cmd)
 		else
 			return true -- automatic aim mode
 		end
+		
 	end
 
 	return false
@@ -354,7 +413,7 @@ local lastsequence
 
 local function checkForCycleYawKeybind()
     local keyDown = isLmaoboxKeybindDown("toggle yaw key")
-    local plocal = entities.GetLocalPlayer()
+    plocal = entities.GetLocalPlayer()
     if not plocal then return end
 
     local weapon = plocal:GetPropEntity("m_hActiveWeapon")
