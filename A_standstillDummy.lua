@@ -4,15 +4,16 @@
     Author: titaniummachine1 (github.com/titaniummachine1)
 ]]
 
-local MaxInputStrength = 450
-
 local function Normalize(vec)
     local length = math.sqrt(vec.x * vec.x + vec.y * vec.y + vec.z * vec.z)
     return Vector3(vec.x / length, vec.y / length, vec.z / length)
 end
 
+-- Constants for minimum and maximum speed
+local MAX_SPEED = 450 -- Maximum speed the player can move
+
 -- Function to compute the move direction
-local function ComputeMove(Cmd, a, b)
+local function ComputeMove(pCmd, a, b)
     local diff = (b - a)
     if diff:Length() == 0 then return Vector3(0, 0, 0) end
 
@@ -21,76 +22,64 @@ local function ComputeMove(Cmd, a, b)
     local vSilent = Vector3(x, y, 0)
 
     local ang = vSilent:Angles()
-    local cPitch, cYaw, cRoll = Cmd:GetViewAngles()
+    local cPitch, cYaw, cRoll = pCmd:GetViewAngles()
     local yaw = math.rad(ang.y - cYaw)
     local pitch = math.rad(ang.x - cPitch)
-    local move = Vector3(math.cos(yaw), -math.sin(yaw), -math.cos(pitch))
+    local move = Vector3(math.cos(yaw) * MAX_SPEED, -math.sin(yaw) * MAX_SPEED, -math.cos(pitch) * MAX_SPEED)
 
     return move
 end
 
--- Function to scale a vector by a given factor
-function Scale(vector, factor)
-    return {x = vector.x * factor, y = vector.y * factor}
+-- Converts time to game ticks
+---@param time number
+---@return integer
+local function Time_to_Ticks(time)
+    return math.floor(0.5 + time / globals.TickInterval())
 end
 
-function WalkTo(Cmd, pLocal, pDestination)
-    local StartPos = pLocal:GetAbsOrigin()
-    local distVector = pDestination - StartPos
-    local distance = distVector:Length()
-    local velocityVector = pLocal:EstimateAbsVelocity()
-    local velocity = velocityVector:Length()
-    local TICK_RATE = globals.TickInterval()
-    local MaxSpeed = pLocal:GetPropFloat("m_flMaxspeed")
-    local Friction = pLocal:GetPropFloat("m_flFriction")
-    local ScaleFactor = MaxSpeed / MaxInputStrength
+-- Function to calculate the time needed to stop completely
+local function CalculateStopTime(velocity, decelerationPerSecond)
+    return velocity / decelerationPerSecond
+end
 
-    local stoppingDistance = math.max(10, math.min(velocity, MaxInputStrength)) -- Calculate dynamic stopping distance
+-- Function to calculate the number of ticks needed to stop completely
+local function CalculateStopTicks(velocity, decelerationPerSecond)
+    local stopTime = CalculateStopTime(velocity, decelerationPerSecond)
+    return Time_to_Ticks(stopTime)
+end
 
-    -- Compute the movement input needed to go towards the target
-    local Result = ComputeMove(Cmd, StartPos, pDestination)
+-- Function to make the player walk to a destination smoothly
+local function WalkTo(pCmd, pLocal, pDestination)
+    local localPos = pLocal:GetAbsOrigin()
+    local distVector = pDestination - localPos
+    local dist = distVector:Length()
+    local velocity = pLocal:EstimateAbsVelocity():Length()
+    local tickInterval = globals.TickInterval()
 
-    if distance <= stoppingDistance and distance > 0.1 then
-        -- Calculate the fastest possible speed we can go to the target without overshooting
-        local decelerationRate = Friction * TICK_RATE
-        local neededDeceleration = velocity^2 / (2 * distance)
-        local adjustedSpeed
+    -- Calculate the number of ticks to stop
+    local AccelerationPerSecond = 84 / tickInterval  -- Converting units per tick to units per second
+    local stopTicks = CalculateStopTicks(velocity, AccelerationPerSecond)
+    print(string.format("Ticks to stop: %d", stopTicks))
 
-        -- If the needed deceleration is greater than the deceleration rate, we need to slow down
-        if neededDeceleration > decelerationRate then
-            adjustedSpeed = velocity - decelerationRate
+    -- Calculate the stop distance
+    local stopTime = CalculateStopTime(velocity, AccelerationPerSecond)
+    local stopDistance = math.max(10, math.min(velocity * stopTicks, 450))
+    print(string.format("Stop Distance: %.2f units", stopDistance))
+
+    local result = ComputeMove(pCmd, localPos, pDestination)
+
+    -- If distance is greater than 1, proceed with walking
+    if dist > 1 then
+        if dist <= stopDistance then
+            local scaleFactor = dist / 100
+            pCmd:SetForwardMove(result.x * scaleFactor)
+            pCmd:SetSideMove(result.y * scaleFactor)
         else
-            -- Otherwise, we can speed up, but not beyond the maximum speed
-            adjustedSpeed = math.min(velocity + decelerationRate, MaxSpeed)
+            pCmd:SetForwardMove(result.x)
+            pCmd:SetSideMove(result.y)
         end
-
-        function round(num, numDecimalPlaces)
-            local mult = 10^(numDecimalPlaces or 0)
-            return math.floor(num * mult + 0.5) / mult
-        end
-
-        local correctionFactor = 0.0000003576279 -- Adjust this value as needed
-        local inputStrength = ((1 / MaxSpeed) * MaxInputStrength) + correctionFactor
-        inputStrength = math.max(1, math.min(inputStrength, 450)) -- Ensure inputStrength is within the range [1, 450]
-        inputStrength = round(inputStrength, 10) -- Round to 10 decimal places
-
-        local adjustedSpeed = math.min(velocity / MaxSpeed, 1)
-        inputStrength = adjustedSpeed * MaxInputStrength
-
-        -- Scale the input based on the adjusted speed
-        Cmd:SetForwardMove(Result.x * inputStrength)
-        Cmd:SetSideMove(Result.y * inputStrength)
-    elseif distance > stoppingDistance then
-        -- If outside the stopping distance, move towards the target at maximum possible input strength
-        Cmd:SetForwardMove(Result.x * MaxInputStrength)
-        Cmd:SetSideMove(Result.y * MaxInputStrength)
-    else
-        Cmd:SetForwardMove(0)
-        Cmd:SetSideMove(0)
     end
 end
-
-
 
 local returnVec = entities.GetLocalPlayer():GetAbsOrigin()
 local pLocalPos = Vector3()
