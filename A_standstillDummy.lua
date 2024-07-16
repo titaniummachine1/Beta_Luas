@@ -4,6 +4,52 @@
     Author: titaniummachine1 (github.com/titaniummachine1)
 ]]
 
+-- Table to store benchmark records
+local benchmarkRecords = {}
+local MAX_RECORDS = 66
+
+-- Global variables for UI display
+AverageMemoryUsage = 0
+AverageTimeUsage = 0
+
+-- Local variables for benchmark calculations
+local startTime, startMemory
+
+-- Function to start the benchmark
+function BenchmarkStart()
+    collectgarbage("collect")  -- Force a full garbage collection
+    startMemory = collectgarbage("count")
+    startTime = os.clock()
+end
+
+-- Function to stop the benchmark and update the results
+function BenchmarkStop()
+    local stopTime = os.clock()
+    collectgarbage("collect")  -- Force a full garbage collection
+    local stopMemory = collectgarbage("count")
+
+    local elapsedTime = math.max(stopTime - startTime, 0)
+    local memoryDelta = math.abs(stopMemory - startMemory)
+
+    -- Add new record to the beginning of the table
+    table.insert(benchmarkRecords, 1, {time = elapsedTime, memory = memoryDelta})
+
+    -- Remove oldest record if we've exceeded MAX_RECORDS
+    if #benchmarkRecords > MAX_RECORDS then
+        table.remove(benchmarkRecords)
+    end
+
+    -- Calculate averages
+    local totalTime, totalMemory = 0, 0
+    for _, record in ipairs(benchmarkRecords) do
+        totalTime = totalTime + record.time
+        totalMemory = totalMemory + record.memory
+    end
+
+    -- Update global variables for UI display
+    AverageTimeUsage = totalTime / #benchmarkRecords
+    AverageMemoryUsage = totalMemory / #benchmarkRecords
+end
 
 -- Constants
 local MAX_SPEED = 450 -- Maximum speed the player can move
@@ -110,76 +156,80 @@ local function Normalize(vec)
     return  vec / vec:Length()
 end
 
-local PlayerHULL = {Min = Vector3(-23.99, -23.99, 0), Max = Vector3(23.99, 23.99, 82)}
+local PlayerHULL = {Min = Vector3(-23.90, -23.90, 0), Max = Vector3(23.90, 23.90, 82)}
 local STEP_HEIGHT = Vector3(0, 0, 18)
 local MAX_FALL_DISTANCE = Vector3(0, 0, 500)
 local Step_Fraction = STEP_HEIGHT.z / MAX_FALL_DISTANCE.z
 
-local Jump_Height = Vector3(0, 0, 72)
 local UP_VECTOR = Vector3(0, 0, 1)
-local MIN_STEP_SIZE = 24 -- Minimum step size in units
+local MIN_STEP_SIZE = 12 -- Minimum step size in units
 local SEGMENTS = 5 -- Number of segments for ground check
 
-local MAX_angle = 45 -- Maximum angle for ground check
-local MAX_ANGLE_RAD = math.rad(MAX_angle) -- Convert to radians for calculations
-local MAX_ITERATIONS = 50 -- Maximum number of iterations to prevent infinite loops
+local MAX_Ground_Angle = 45 -- Maximum angle for ground check
+local MAX_Wall_Angle = 55 -- Maximum angle for ground check
+local MAX_ITERATIONS = 27 -- Maximum number of iterations to prevent infinite loops
+
+--preinicialize the values
+local direction = Vector3(0,0,0)
+local segmentEnd = Vector3(0,0,0)
+local currentPos = Vector3(0,0,0)
+local currentDistance = 0
+local Blocked = false
+local wallTrace
+local segmentLength
+local numSegments
 
 local hullTraces = {}
 local lineTraces = {}
 
-local function getHorizontalManhattanDistance(point1, point2)
- -- Calculate absolute horizontal distance  
-    return math.abs(point1.x - point2.x) + math.abs(point1.y - point2.y)
-end
-
 -- Checks for an obstruction between two points using a hull trace.
-local function performHullTrace(startPos, endPos)
+local function performTraceHull(startPos, endPos)
     local result = engine.TraceHull(startPos, endPos, PlayerHULL.Min, PlayerHULL.Max, MASK_PLAYERSOLID)
-    table.insert(hullTraces, {startPos = startPos, endPos = result.endpos, result = result})
+    table.insert(hullTraces, {startPos = startPos, endPos = result.endpos})
     return result
 end
 
 -- Checks for ground stability using a line trace.
-local function performLineTrace(startPos, endPos)
+local function performTraceLine(startPos, endPos)
     local result = engine.TraceLine(startPos, endPos, MASK_PLAYERSOLID)
-    table.insert(lineTraces, {startPos = startPos, endPos = result.endpos, result = result})
+    table.insert(lineTraces, {startPos = startPos, endPos = result.endpos})
     return result
 end
 
--- Pre-calculate the threshold based on maximum slope angle and UP_VECTOR
-local MAX_SLOPE_ANGLE_COS = math.cos(MAX_ANGLE_RAD)
+--calcualte horizontal distance
+---@param point1 Vector3
+---@param point2 Vector3
+local function getHorizontalManhattanDistance(point1, point2)
+    return math.abs(point1.x - point2.x) + math.abs(point1.y - point2.y)
+end
 
---[[Function to adjust direction based on ground normal
+-- Adjust the z component of the direction vector
 local function adjustDirectionToGround(direction, groundNormal)
-    local angleBetween = math.acos(groundNormal:Dot(UP_VECTOR))
-    if angleBetween <= MAX_ANGLE_RAD then
-        return Normalize(direction:Cross(UP_VECTOR):Cross(groundNormal))
+    --[[
+    local angle = math.deg(math.acos(groundNormal:Dot(UP_VECTOR)))
+    if angle > MAX_Ground_Angle then
+        return direction
     end
-    return direction -- If the slope is too steep, keep the original direction
-end]]
 
-local function adjustDirectionToGround(direction, groundNormal)
-    --[[ actual solution unoptymised
-        local function adjustDirectionToGround(direction, groundNormal)
-        local angle = math.deg(math.acos(groundNormal:Dot(UP_VECTOR)))
-        if angle > MAX_angle then
-            return direction
-        end
+    -- Calculate the dot product of direction and groundNormal
+    local dot = direction:Dot(groundNormal)
 
-        -- Calculate the dot product of direction and groundNormal
-        local dot = direction:Dot(groundNormal)
-
-        -- Adjust the z component of the direction vector
-        local adjustedDirection = Vector(direction.x, direction.y, direction.z - groundNormal.z * dot)
-
-        return adjustedDirection
-    end
-    ]]
     -- Adjust the z component of the direction vector
-    return (math.deg(math.acos(groundNormal:Dot(UP_VECTOR))) > MAX_angle) and direction or
+    local adjustedDirection = Vector(direction.x, direction.y, direction.z - groundNormal.z * dot)
+
+    return Normalize(adjustedDirection)
+    ]]
+    direction = Normalize(direction)
+    return (math.deg(math.acos(groundNormal:Dot(UP_VECTOR))) > MAX_Ground_Angle) and direction or
     (Vector3(direction.x, direction.y, direction.z - groundNormal.z * direction:Dot(groundNormal)))
 end
 
+-- Adjust the z component of the direction vector
+local function adjustDirectionToWall(direction, groundNormal)
+    direction = Normalize(direction)
+    return (math.deg(math.acos(groundNormal:Dot(UP_VECTOR))) > MAX_Wall_Angle) and direction or
+    (Vector3(direction.x, direction.y, direction.z - groundNormal.z * direction:Dot(groundNormal)))
+end
 
 -- Main function to check walkability
 local function IsWalkable(startPos, goalPos)
@@ -187,72 +237,53 @@ local function IsWalkable(startPos, goalPos)
     hullTraces = {}
     lineTraces = {}
 
-    local currentPos = startPos
+    --preinicialize the values
+    direction = Vector3(0,0,0)
+    segmentEnd = Vector3(0,0,0)
+    currentPos = startPos
+    Blocked = false
+    wallTrace = nil
+    numSegments = nil
 
     -- Initial ground collision check
-    local groundTrace = performHullTrace(startPos + STEP_HEIGHT, startPos - MAX_FALL_DISTANCE)
-    if groundTrace.fraction == 1 then
-        return false -- No ground found initially
-    end
+    local groundTrace = performTraceLine(startPos + STEP_HEIGHT, startPos - MAX_FALL_DISTANCE)
 
-    local lastP = groundTrace.endpos
-    local lastDirection = adjustDirectionToGround(Normalize(Vector3(goalPos.x - startPos.x, goalPos.y - startPos.y, 0)), groundTrace.plane)
-    local goalDistance = getHorizontalManhattanDistance(startPos, goalPos) + 1
+    local lastP = startPos
+    local lastDirection = adjustDirectionToGround(goalPos - startPos, groundTrace.plane)
+    local goalDistance = getHorizontalManhattanDistance(startPos, goalPos)
 
     for i = 1, MAX_ITERATIONS do
         local Distance = (currentPos - goalPos):Length()
-        local direction = lastDirection
+        direction = lastDirection
         currentPos = lastP + direction * Distance
 
         -- Forward collision
-        local wallTrace = performHullTrace(lastP + STEP_HEIGHT, currentPos + STEP_HEIGHT)
+        wallTrace = performTraceHull(lastP + STEP_HEIGHT, currentPos + STEP_HEIGHT)
         currentPos = wallTrace.endpos
+        direction = adjustDirectionToWall(currentPos - lastP, groundTrace.plane)
+
+        -- wall check
+        Blocked = (wallTrace.fraction < 1) and performTraceHull(currentPos + STEP_HEIGHT + direction, currentPos - STEP_HEIGHT + direction).fraction == 0 or false
 
        -- Ground collision with segmentation
         Distance = (currentPos - lastP):Length()
-        local segmentLength = math.max(Distance / SEGMENTS, MIN_STEP_SIZE)
-        local numSegments = math.min(SEGMENTS, math.floor(Distance / segmentLength))
-
+        segmentLength = math.max(Distance / SEGMENTS, MIN_STEP_SIZE)
+        numSegments = math.min(SEGMENTS, math.floor(Distance / segmentLength))
         for seg = 1, numSegments do
-            local t = seg / numSegments
-            local segmentEnd = lastP + (currentPos - lastP) * t
-            local groundCheckEnd = segmentEnd - MAX_FALL_DISTANCE
-            groundTrace = performHullTrace(segmentEnd + STEP_HEIGHT, groundCheckEnd + STEP_HEIGHT)
-
-            if groundTrace.fraction > Step_Fraction or seg == SEGMENTS then -- always last trace adjsut position to ground
+            segmentEnd = lastP + STEP_HEIGHT + (currentPos - lastP) * seg / numSegments
+            groundTrace = performTraceHull(segmentEnd, segmentEnd - MAX_FALL_DISTANCE)
+            Blocked = ((groundTrace == 1 or groundTrace == 0)) and true or Blocked
+            if groundTrace.fraction > Step_Fraction or seg == SEGMENTS then
+                -- always last trace adjsut position to ground
                 direction = adjustDirectionToGround(direction, groundTrace.plane)
                 currentPos = groundTrace.endpos
                 break
-            elseif groundTrace == 0 or groundTrace == 1 then
-                return false -- Stuck in map geometry or we fall too much, return false
             end
         end
 
-
-        -- wall check
-        if wallTrace.fraction < 1 then
-            local downTrace = performHullTrace(currentPos + STEP_HEIGHT + direction * 1, currentPos - STEP_HEIGHT + direction * 1)
-            if downTrace.fraction == 0 then
-                return false -- Wall blocked
-            end
-        end
-
-        if not currentPos then
-            return false
-        end
-
-        local currentDistance = getHorizontalManhattanDistance(currentPos, goalPos)
-
-        -- If at goal return
-        if currentDistance < 24 then
-            local finalGroundTrace = performLineTrace(currentPos, goalPos)
-            if finalGroundTrace.fraction == 1 and (currentPos - goalPos):Length() < 24 then
-                return true -- We are under the goal below the floor
-            else
-                return false
-            end
-        elseif goalDistance < currentDistance then
-            return false
+        currentDistance = getHorizontalManhattanDistance(currentPos, goalPos)
+        if Blocked or goalDistance < currentDistance or currentDistance < 24 then
+            return performTraceLine(currentPos, goalPos).fraction == 1 -- We are under the goal below the floor
         end
 
         -- Add the prediction record
@@ -282,7 +313,7 @@ local function OnCreateMove(Cmd)
     if Cmd:GetForwardMove() ~= 0 or Cmd:GetSideMove() ~= 0 then return end --movement bypass
 
     if PosPlaced and isWalkable then
-        WalkTo(Cmd, pLocal, returnVec)
+        --WalkTo(Cmd, pLocal, returnVec)
     end
 end
 
@@ -377,7 +408,9 @@ local function doDraw()
         draw.Color(255, 255, 255, 255)
         Draw3DBox(10, returnVec)
         if (pLocalPos - returnVec):Length() > 10 then
+            BenchmarkStart()
             isWalkable = IsWalkable(pLocalPos, returnVec)
+            BenchmarkStop()
             if isWalkable then
                 draw.Color(0, 255, 0, 255)
             else
@@ -385,6 +418,11 @@ local function doDraw()
             end
             ArrowLine(pLocalPos, returnVec, 10, 20, false)
         end
+
+        draw.Color(255, 255, 255, 255)
+
+        draw.Text(20, 120, string.format("Memory usage: %.2f KB", AverageMemoryUsage))
+        draw.Text(20, 150, string.format("Time usage: %.2f ms", AverageTimeUsage * 1000))
 
         -- Draw all line traces
         for _, trace in ipairs(lineTraces) do
