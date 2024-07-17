@@ -5,12 +5,13 @@ cl_vote_ui_show_notification 1
 sv_vote_creation_timer 1
 sv_vote_failure_timer 1
 ]]
---for debug purpspoe
+--[[for debug purpspoe
 client.Command("sv_vote_issue_kick_allowed 1", true) -- enable cheats"sv_cheats 1"
 client.Command("cl_vote_ui_active_after_voting 1", true) -- enable cheats"sv_cheats 1"
 client.Command("sv_vote_creation_timer 1", true) -- enable cheats"sv_cheats 1"
 client.Command("sv_vote_creation_timer 1", true) -- enable cheats"sv_cheats 1"
 client.Command("sv_vote_failure_timer 1", true) -- enable cheats"sv_cheats 1"
+]]
 
 pcall(UnloadLib) -- if it fails then forget about it it means it wasnt loaded in first place and were clean
 
