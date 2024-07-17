@@ -1,4 +1,3 @@
--- type in console : ``lua vote = 1`` means auto vote yes, ``lua vote = 2`` means auto vote no
 --[[type in console:
 sv_vote_issue_kick_allowed 1
 cl_vote_ui_active_after_voting 1
