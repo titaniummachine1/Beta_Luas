@@ -5,7 +5,7 @@ cl_vote_ui_show_notification 1
 sv_vote_creation_timer 1
 sv_vote_failure_timer 1
 ]]
---[[for debug purpspoe
+--[[ for debug purpspoe
 client.Command("sv_vote_issue_kick_allowed 1", true) -- enable cheats"sv_cheats 1"
 client.Command("cl_vote_ui_active_after_voting 1", true) -- enable cheats"sv_cheats 1"
 client.Command("sv_vote_creation_timer 1", true) -- enable cheats"sv_cheats 1"
@@ -45,7 +45,6 @@ local function onVoteOptions(event)
     end
 end
 
--- Function to handle vote casting
 local function onVoteCast(event)
     local voteOption = event:GetInt('vote_option') + 1
     local team = event:GetInt('team')
@@ -57,26 +56,19 @@ local function onVoteCast(event)
     local me = entities.GetLocalPlayer()
 
     if not me then return end
-    local myTeam = me:GetTeamNumber()
-    local enemyPrefix = "Enemy"
 
     -- Use the player's team color for their name in the chat message
     local teamColorCode = '\x03' -- Default to Player name color; adjust based on team if necessary
     if team == 2 then
-        teamColorCode = '\x07FF0000' -- Red team color in HEX
+        teamColorCode = '\x07ff3d3d' -- Red team color in HEX
     elseif team == 3 then
-        teamColorCode = '\x070000FF' -- Blue team color in HEX
-    end
-
-    -- Check if the entity is on the opposing team
-    if team ~= myTeam then
-        name = string.format('%s%s \x03%s', teamColorCode, enemyPrefix, name)
+        teamColorCode = '\x0799ccff' -- Blue team color in HEX
     end
 
     if entity == me then
-        client.ChatPrintf(string.format('\x03(Vote Reveal) \x03(Auto) \x01Voted %s', options[voteOption]))
+        client.ChatPrintf(string.format('\x01(\x03Auto-Vote\x01) \x01Voted %s', options[voteOption]))
     else
-        client.ChatPrintf(string.format('\x03(Vote Reveal) \x01Voted %s (\x05%s\x01)', options[voteOption], name))
+        client.ChatPrintf(string.format('\x01(\x03Vote-Reveal\x01) \x01(%s%s\x01) Voted %s ', teamColorCode, name, options[voteOption]))
     end
 end
 
@@ -94,12 +86,15 @@ end
 
 -- Function to handle user message vote starts
 local function handleUserMessageVoteStart(msg)
+    if not (msg:GetID() == VoteStart) then return end --fix the code working every time someone sends any mesage
+
     local team = msg:ReadByte()
     local voteIdx = msg:ReadInt(32)
     local entIdx = msg:ReadByte()
     local dispStr = msg:ReadString(64)
     local detailsStr = msg:ReadString(64)
     local target = msg:ReadByte() >> 1 --index
+
     local playerInfo = client.GetPlayerInfo(target)  -- Retrieve player information
 
     _G.vote = t[gui.GetValue( 'Auto Voting' )] --auto update
@@ -130,12 +125,13 @@ local function handleUserMessageVoteStart(msg)
 end
 
 Notify.Simple("Autovote.Lua is active", "In case of erros downlado lnxlib", 5)
--- Register and unregister callbacks for clean setup
-callbacks.Unregister('FireGameEvent', 'lboxfixwhen_1')
-callbacks.Register('FireGameEvent', 'lboxfixwhen_1', handleFireGameEvent)
 
-callbacks.Unregister('DispatchUserMessage', 'AutoVote_DispatchUserMessage')
-callbacks.Register('DispatchUserMessage', 'AutoVote_DispatchUserMessage', handleUserMessageVoteStart)
+callbacks.Unregister('FireGameEvent', 'lboxfixwhen_1') --unregister callbacks for clean setup
+callbacks.Register('FireGameEvent', 'lboxfixwhen_1', handleFireGameEvent) -- Register game events
+
+-- Register and unregister callbacks for clean setup
+callbacks.Unregister('DispatchUserMessage', 'AutoVote_DispatchUserMessage') --unregister callbacks for clean setup
+callbacks.Register('DispatchUserMessage', 'AutoVote_DispatchUserMessage', handleUserMessageVoteStart) -- Register user messages hook will catch anynform of message besides vc
 
 client.Command('play "ui/buttonclickrelease"', true) -- Play the "buttonclickrelease" sound
 
