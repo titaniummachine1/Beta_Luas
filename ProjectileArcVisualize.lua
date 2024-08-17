@@ -1,3 +1,14 @@
+--[[
+    Projectile_Arc_Visualizer lua
+    Autor: Titaniummachine1 - (https://github.com/titaniummachine1/Beta_Luas/blob/main/ProjectileArcVisualize.lua)
+    pasted from GoodEveningFellOff - (https://github.com/GoodEveningFellOff/lmaobox-visualize-arc-trajectories)
+
+    fixed issues with readability, fully reworked whole lua in msot places wehre aplciable
+    simply translated to reaable format.
+    might cause Curbit Overflow idk how to fix it anyways
+    just made sure nothign is created every frame to patch it.
+]]
+
 local config = {
 	polygon = {
 		enabled = true;
