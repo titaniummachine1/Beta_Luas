@@ -844,25 +844,29 @@ local function GetProjectileInformationObject(pLocal, pWeapon)
     end
 end
 
--- Clear the trajectory data for the current tick
+-- Clear the trajectory data for the current tick to start fresh
 local function ClearTrajectoryData()
     trajectoryLine:Clear()
 end
 
--- Check if the trajectory should be drawn based on various conditions
+-- Check if all conditions are met to render the trajectory
 local function ShouldRenderTrajectory(pLocal, pWeapon)
+    -- Ensures the trajectory should be drawn, the local player is valid, and the weapon is valid
     return ShouldDrawTrajectory() and IsValidLocalPlayer(pLocal) and IsValidWeapon(pWeapon)
 end
 
--- Calculate the start position and view angle for the projectile's trajectory
+-- Calculate the start position and the view angle for the projectile's trajectory
 local function GetStartPositionAndAngle(pLocal)
+    -- The start position is the player's current position plus their view offset
     local vStartPosition = pLocal:GetAbsOrigin() + pLocal:GetPropVector("localdata", "m_vecViewOffset[0]")
+    -- The view angle is the direction the player is looking
     local vStartAngle = engine.GetViewAngles()
     return vStartPosition, vStartAngle
 end
 
--- Perform the initial hull trace to determine the trajectory start point
+-- Perform the initial hull trace to determine the starting point of the trajectory
 local function PerformInitialTrace(vStartPosition, vStartAngle, vOffset, vCollisionMin, vCollisionMax, pWeapon)
+    -- A trace (or raycast) is done from the start position in the direction of the projectile to see where it would first hit
     return TRACE_HULL(
         vStartPosition,
         vStartPosition + (vStartAngle:Forward() * vOffset.x) +
@@ -872,78 +876,98 @@ local function PerformInitialTrace(vStartPosition, vStartAngle, vOffset, vCollis
     )
 end
 
--- Adjust the view angle based on weapon type and collision results
+-- Adjust the view angle if needed, based on the weapon type and collision results
 local function AdjustViewAngleIfNeeded(iItemDefinitionType, fForwardVelocity, vStartPosition, vStartAngle, results)
+    -- Certain weapons (like bows or crossbows) might need the angle adjusted for more accurate trajectory prediction
     if iItemDefinitionType == -1 or (iItemDefinitionType >= 7 and iItemDefinitionType < 11) and fForwardVelocity ~= 0 then
+        -- Trace a straight line forward to correct the angle
         local res = TRACE_Line(results.startpos, results.startpos + (vStartAngle:Forward() * 2000), 100679691)
+        -- Adjust the angle based on where the trace ends
         vStartAngle = (((res.fraction <= 0.1) and (results.startpos + (vStartAngle:Forward() * 2000)) or res.endpos) - vStartPosition):Angles()
     end
     return vStartAngle
 end
 
--- Calculate the projectile's velocity vector based on the start angle and weapon stats
+-- Calculate the velocity vector for the projectile based on the start angle and weapon stats
 local function CalculateVelocity(vStartAngle, fForwardVelocity, fUpwardVelocity)
+    -- The velocity is a combination of the forward velocity and any upward velocity (like from a grenade arc)
     return (vStartAngle:Forward() * fForwardVelocity) + (vStartAngle:Up() * fUpwardVelocity)
 end
 
--- Insert trajectory points for straight-line projectiles (e.g., rockets)
+-- Handle the trajectory for straight-line projectiles (like rockets)
 local function HandleStraightLineTrajectory(results, vStartAngle, vStartPosition)
+    -- Perform a line trace to see where a straight-line projectile will go
     local traceResults = TRACE_Line(vStartPosition, vStartPosition + (vStartAngle:Forward() * 10000), 100679691)
-    if traceResults.startsolid then return traceResults end
+    if traceResults.startsolid then return traceResults end  -- Stop if the projectile starts inside a solid object
 
+    -- Calculate how many segments of the line should be drawn
     local iSegments = math.floor((traceResults.endpos - traceResults.startpos):Length() / g_fFlagInterval)
     local vForward = vStartAngle:Forward()
 
+    -- Insert points along the trajectory into the trajectory line
     for i = 1, iSegments do
         trajectoryLine:Insert(vForward * (i * g_fFlagInterval) + vStartPosition)
     end
 
+    -- Insert the final end position
     trajectoryLine:Insert(traceResults.endpos)
     return traceResults
 end
 
--- Insert trajectory points for arc-based projectiles (e.g., grenades)
+-- Handle the trajectory for arc-based projectiles (like grenades)
 local function HandleArcTrajectory(results, vStartPosition, vVelocity, vCollisionMin, vCollisionMax, fGravity, fDrag)
     local traceResults = results
     local vPosition = Vector3(0, 0, 0)
+
+    -- Simulate the projectile's movement over time
     for i = 0.01515, 5, g_fTraceInterval do
+        -- Calculate the scalar based on whether drag is present or not
         local scalar = (not fDrag) and i or ((1 - math.exp(-fDrag * i)) / fDrag)
 
+        -- Update the position based on the velocity, gravity, and time
         vPosition.x = vVelocity.x * scalar + vStartPosition.x
         vPosition.y = vVelocity.y * scalar + vStartPosition.y
         vPosition.z = (vVelocity.z - fGravity * i) * scalar + vStartPosition.z
 
+        -- Trace the trajectory and check for collisions
         traceResults = vCollisionMax.x ~= 0 and TRACE_HULL(traceResults.endpos, vPosition, vCollisionMin, vCollisionMax, 100679691)
             or TRACE_Line(vStartPosition, vStartPosition + (vStartAngle:Forward() * 10000), 100679691)
 
+        -- Insert the new position into the trajectory line
         trajectoryLine:Insert(traceResults.endpos)
 
-        if traceResults.fraction ~= 1 then break end
+        if traceResults.fraction ~= 1 then break end  -- Stop if the projectile hits something
     end
     return traceResults
 end
 
--- Insert trajectory points for physics-based projectiles (e.g., sticky bombs)
+-- Handle the trajectory for physics-based projectiles (like sticky bombs)
 local function HandlePhysicsBasedTrajectory(results, vStartPosition, vStartAngle, vVelocity, vCollisionMin, vCollisionMax, iItemDefinitionType)
     local traceResults = results
+    -- Retrieve the physics object associated with the projectile
     local obj = PhysicsObjectHandler(iItemDefinitionType)
 
+    -- Set the initial position and velocity of the physics object
     obj:SetPosition(vStartPosition, vStartAngle, true)
     obj:SetVelocity(vVelocity, Vector3(0, 0, 0))
+
+    -- Simulate the physics object over several iterations to trace its path
     for i = 2, 330 do
         traceResults = TRACE_HULL(traceResults.endpos, obj:GetPosition(), vCollisionMin, vCollisionMax, 100679691)
         trajectoryLine:Insert(traceResults.endpos)
 
-        if traceResults.fraction ~= 1 then break end
+        if traceResults.fraction ~= 1 then break end  -- Stop if the projectile hits something
         PhysicsEnvironment:Simulate(g_fTraceInterval)
     end
 
+    -- Reset the physics simulation clock after use
     PhysicsEnvironment:ResetSimulationClock()
     return traceResults
 end
 
--- Draw the impact polygon at the final position of the projectile
+-- Draw the impact polygon at the final position of the projectile, if applicable
 local function DrawImpactPolygonIfNeeded(traceResults)
+    -- Only draw the impact polygon if there is a valid surface plane to draw it on
     if traceResults and traceResults.plane then
         impactPolygon:drawImpactPolygon(traceResults.plane, traceResults.endpos)
     end
@@ -951,28 +975,38 @@ end
 
 -- Main function to trace and simulate the trajectory
 local function TraceAndSimulateTrajectory(pLocal, pWeapon)
-    ClearTrajectoryData()  -- Clear previous tick's data
+    ClearTrajectoryData()  -- Clear previous tick's trajectory data
 
+    -- Check if all conditions are met to render the trajectory
     if not ShouldRenderTrajectory(pLocal, pWeapon) then return end
 
+    -- Retrieve the projectile information and the type of weapon being used
     local projectileInfo, iItemDefinitionType = GetProjectileInformationObject(pLocal, pWeapon)
     if not iItemDefinitionType or not projectileInfo then return end
 
+    -- Unpack the projectile information for easier access
     local vOffset, fForwardVelocity, fUpwardVelocity, vCollisionMax, fGravity, fDrag = table.unpack(projectileInfo)
     local vCollisionMin = -vCollisionMax
 
+    -- Calculate the start position and angle for the trajectory
     local vStartPosition, vStartAngle = GetStartPositionAndAngle(pLocal)
 
+    -- Perform the initial trace to determine where the projectile starts
     local traceResults = PerformInitialTrace(vStartPosition, vStartAngle, vOffset, vCollisionMin, vCollisionMax, pWeapon)
-    if traceResults.fraction ~= 1 then return end
+    if traceResults.fraction ~= 1 then return end  -- Stop if the trace starts inside a solid object
     vStartPosition = traceResults.endpos
 
+    -- Adjust the view angle if necessary based on the weapon type
     vStartAngle = AdjustViewAngleIfNeeded(iItemDefinitionType, fForwardVelocity, vStartPosition, vStartAngle, traceResults)
 
+    -- Calculate the projectile's velocity vector
     local vVelocity = CalculateVelocity(vStartAngle, fForwardVelocity, fUpwardVelocity)
+    -- Update the flag offset for rendering the trajectory line
     trajectoryLine.flagOffset = vStartAngle:Right() * -config.flags.size
+    -- Insert the initial position into the trajectory line
     trajectoryLine:Insert(vStartPosition)
 
+    -- Handle the trajectory based on the type of projectile
     if iItemDefinitionType == -1 then
         traceResults = HandleStraightLineTrajectory(traceResults, vStartAngle, vStartPosition)
     elseif iItemDefinitionType > 3 then
@@ -981,10 +1015,13 @@ local function TraceAndSimulateTrajectory(pLocal, pWeapon)
         traceResults = HandlePhysicsBasedTrajectory(traceResults, vStartPosition, vStartAngle, vVelocity, vCollisionMin, vCollisionMax, iItemDefinitionType)
     end
 
+    -- If no trajectory points were added, exit early
     if trajectoryLine.size == 0 then return end
 
+    -- Draw the impact polygon at the final position of the trajectory
     DrawImpactPolygonIfNeeded(traceResults)
 
+    -- Render the trajectory line if it has more than one point
     if trajectoryLine.size > 1 then
         trajectoryLine:Render()
     end
