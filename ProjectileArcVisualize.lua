@@ -968,7 +968,7 @@ end
 -- Draw the impact polygon at the final position of the projectile, if applicable
 local function DrawImpactPolygonIfNeeded(traceResults)
     -- Only draw the impact polygon if there is a valid surface plane to draw it on
-    if traceResults and traceResults.plane then
+    if traceResults and traceResults.plane and traceResults.fraction < 1 then
         impactPolygon:drawImpactPolygon(traceResults.plane, traceResults.endpos)
     end
 end
