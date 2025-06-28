@@ -97,7 +97,7 @@ local SENTRY_AABB_SIZE = 48 -- Radius around sentry where we actively ride (dyna
 local PLAYER_HITBOX_HALF_WIDTH = 24 -- Half width of player (x and y)
 
 -- Debug settings
-local ENABLE_DEBUG = true
+local ENABLE_DEBUG = false
 local ENABLE_VISUALS = true
 
 -- Separate switch for console spam so overlay can stay on
@@ -1250,81 +1250,100 @@ local function OnDraw()
 
 	local playerPos = pLocal:GetAbsOrigin()
 
-	draw.SetFont(font)
+	-- ALL TEXT DEBUG OUTPUT: Only show when ENABLE_DEBUG is true
+	if ENABLE_DEBUG then
+		draw.SetFont(font)
 
-	-- Draw status information
-	draw.Color(255, 255, 255, 255)
-	local yOffset = 20
+		-- Draw status information
+		draw.Color(255, 255, 255, 255)
+		local yOffset = 20
 
-	-- Show automatic riding status (always enabled now)
-	draw.Color(100, 255, 100, 255) -- Light green
-	draw.Text(20, yOffset, "Sentry Riding: ACTIVE (automatic)")
-	yOffset = yOffset + 20
-	draw.Color(255, 255, 255, 255) -- Reset to white
+		-- Show automatic riding status (always enabled now)
+		draw.Color(100, 255, 100, 255) -- Light green
+		draw.Text(20, yOffset, "Sentry Riding: ACTIVE (automatic)")
+		yOffset = yOffset + 20
+		draw.Color(255, 255, 255, 255) -- Reset to white
+	end
 
 	if activeSentry then
 		local sentryPos = activeSentry:GetAbsOrigin()
 		local distance = (playerPos - sentryPos):Length()
 		local inRidingZone = isInRidingZone(playerPos, sentryPos)
 
-		-- Show sentry information
-		draw.Text(20, yOffset, string.format("Active Sentry Distance: %.1f", distance))
-		yOffset = yOffset + 20
-		draw.Text(20, yOffset, string.format("In Riding Zone: %s", inRidingZone and "YES" or "NO"))
-		yOffset = yOffset + 20
-
-		-- Show team information to confirm enemy targeting
-		local playerTeam = pLocal:GetTeamNumber()
-		local sentryTeam = activeSentry:GetTeamNumber()
-		local teamNames = { [2] = "RED", [3] = "BLU" }
-		local playerTeamName = teamNames[playerTeam] or "UNKNOWN"
-		local sentryTeamName = teamNames[sentryTeam] or "UNKNOWN"
-
-		draw.Color(255, 200, 100, 255) -- Orange for team info
-		draw.Text(20, yOffset, string.format("Teams - Player: %s, Sentry: %s", playerTeamName, sentryTeamName))
-		yOffset = yOffset + 20
-		draw.Color(255, 255, 255, 255) -- Reset to white
-
-		-- Show sentry level and dimensions
-		local level = getSentryLevel(activeSentry)
-		local levelText = level == 0 and "Mini" or ("Level " .. level)
-		draw.Text(20, yOffset, string.format("Sentry Type: %s", levelText))
-		yOffset = yOffset + 20
-
-		local minBounds, maxBounds = getSentryHitbox(activeSentry)
-		if minBounds and maxBounds then
-			local sentryWidth = math.abs(maxBounds.x - minBounds.x)
-			local sentryDepth = math.abs(maxBounds.y - minBounds.y)
-			local sentryHeight = math.abs(maxBounds.z - minBounds.z)
-			draw.Text(20, yOffset, string.format("Sentry Size: %.0fx%.0fx%.0f", sentryWidth, sentryDepth, sentryHeight))
+		-- Show sentry information (debug only)
+		if ENABLE_DEBUG then
+			local yOffset = 80 -- Start below the main status
+			draw.Text(20, yOffset, string.format("Active Sentry Distance: %.1f", distance))
 			yOffset = yOffset + 20
-		end
-		draw.Text(20, yOffset, string.format("Riding Zone Radius: %d", SENTRY_AABB_SIZE))
-		yOffset = yOffset + 20
+			draw.Text(20, yOffset, string.format("In Riding Zone: %s", inRidingZone and "YES" or "NO"))
+			yOffset = yOffset + 20
 
-		-- Show protection period status
-		local currentTick = globals.TickCount()
-		local ticksSinceStart = currentTick - ridingStartTick
-		if ticksSinceStart < PROTECTION_TICKS then
-			draw.Color(255, 255, 100, 255) -- Yellow during protection
-			draw.Text(20, yOffset, string.format("Protection Period: %d/%d ticks", ticksSinceStart, PROTECTION_TICKS))
+			-- Show team information to confirm enemy targeting
+			local playerTeam = pLocal:GetTeamNumber()
+			local sentryTeam = activeSentry:GetTeamNumber()
+			local teamNames = { [2] = "RED", [3] = "BLU" }
+			local playerTeamName = teamNames[playerTeam] or "UNKNOWN"
+			local sentryTeamName = teamNames[sentryTeam] or "UNKNOWN"
+
+			draw.Color(255, 200, 100, 255) -- Orange for team info
+			draw.Text(20, yOffset, string.format("Teams - Player: %s, Sentry: %s", playerTeamName, sentryTeamName))
 			yOffset = yOffset + 20
 			draw.Color(255, 255, 255, 255) -- Reset to white
+
+			-- Show sentry level and dimensions
+			local level = getSentryLevel(activeSentry)
+			local levelText = level == 0 and "Mini" or ("Level " .. level)
+			draw.Text(20, yOffset, string.format("Sentry Type: %s", levelText))
+			yOffset = yOffset + 20
+
+			local minBounds, maxBounds = getSentryHitbox(activeSentry)
+			if minBounds and maxBounds then
+				local sentryWidth = math.abs(maxBounds.x - minBounds.x)
+				local sentryDepth = math.abs(maxBounds.y - minBounds.y)
+				local sentryHeight = math.abs(maxBounds.z - minBounds.z)
+				draw.Text(
+					20,
+					yOffset,
+					string.format("Sentry Size: %.0fx%.0fx%.0f", sentryWidth, sentryDepth, sentryHeight)
+				)
+				yOffset = yOffset + 20
+			end
+			draw.Text(20, yOffset, string.format("Riding Zone Radius: %d", SENTRY_AABB_SIZE))
+			yOffset = yOffset + 20
+
+			-- Show protection period status
+			local currentTick = globals.TickCount()
+			local ticksSinceStart = currentTick - ridingStartTick
+			if ticksSinceStart < PROTECTION_TICKS then
+				draw.Color(255, 255, 100, 255) -- Yellow during protection
+				draw.Text(
+					20,
+					yOffset,
+					string.format("Protection Period: %d/%d ticks", ticksSinceStart, PROTECTION_TICKS)
+				)
+				yOffset = yOffset + 20
+				draw.Color(255, 255, 255, 255) -- Reset to white
+			end
 		end
 
-		-- VISUAL INDICATORS
-		-- Draw actual sentry hitbox (cyan outline)
-		DrawSentryHitbox(activeSentry, { 0, 255, 255, 150 })
-
-		-- Draw riding zone area (yellow square at riding height)
+		-- VISUAL INDICATORS ------------------------------------------------------
+		-- Always show the riding zone footprint so you know where the script expects
+		-- you to stand (yellow square at riding height).
 		local ridingZonePos = Vector3(sentryPos.x, sentryPos.y, sentryPos.z + 66)
 		DrawBox(ridingZonePos, SENTRY_AABB_SIZE * 2, { 255, 255, 0, 150 })
 
-		-- Draw sentry aim direction (red arrow)
-		local aimAngles = getSentryAimAngles(activeSentry)
-		local forward = aimAngles:Forward()
-		local aimEnd = sentryPos + (forward * 100)
-		DrawArrow(sentryPos, aimEnd, { 255, 0, 0, 255 })
+		-- Extra developer-only overlays (hitbox outline, aim direction) are noisy in
+		-- normal gameplay, so show them only when ENABLE_DEBUG is true.
+		if ENABLE_DEBUG then
+			-- Draw actual sentry hitbox (cyan outline)
+			DrawSentryHitbox(activeSentry, { 0, 255, 255, 150 })
+
+			-- Draw sentry aim direction (red arrow)
+			local aimAngles = getSentryAimAngles(activeSentry)
+			local forward = aimAngles:Forward()
+			local aimEnd = sentryPos + (forward * 100)
+			DrawArrow(sentryPos, aimEnd, { 255, 0, 0, 255 })
+		end
 
 		-- Draw target ride position and path
 		if targetRidePosition then
@@ -1334,54 +1353,27 @@ local function OnDraw()
 			-- Draw path from player to target (green arrow)
 			DrawArrow(playerPos, targetRidePosition, { 0, 255, 0, 200 })
 
-			-- MOVEMENT DEBUG: Draw where the movement system will actually move us
-			-- Calculate the actual movement direction using the same logic as WalkTo
-			local _, viewYaw = entities.GetLocalPlayer():GetEyeAngles()
-			if viewYaw then
-				local fwdNorm, sideNorm = WorldDirToLocalInput(playerPos, targetRidePosition, viewYaw * DEG_TO_RAD)
-
-				-- Convert back to world space to visualize
-				local viewYawRad = viewYaw * DEG_TO_RAD
-				local worldFwd = math.cos(viewYawRad) * fwdNorm - math.sin(viewYawRad) * sideNorm
-				local worldSide = math.sin(viewYawRad) * fwdNorm + math.cos(viewYawRad) * sideNorm
-				local actualMoveDir = Vector3(worldFwd, worldSide, 0)
-				local actualMoveEnd = playerPos + (actualMoveDir * 80) -- more visible length
-
-				-- Draw movement intent direction (orange arrow)
-				DrawArrow(playerPos, actualMoveEnd, { 255, 128, 0, 255 })
-
-				-- Draw acceleration vector (magenta) scaled to in-game units per tick
-				if debugAccelVec then
-					local scale = 10 -- visual scaling so arrow is noticeable (10 uu == 1px approx)
-					local accelEnd = playerPos + (debugAccelVec * scale)
-					DrawArrow(playerPos, accelEnd, { 255, 0, 255, 255 })
-				end
-			end
-
-			local rideDistance = (playerPos - targetRidePosition):Length()
-			draw.Text(20, yOffset, string.format("Ride Position Distance: %.1f", rideDistance))
-			yOffset = yOffset + 20
-
-			-- MOVEMENT DEBUG: Show exact direction calculations
-			local dx = targetRidePosition.x - playerPos.x
-			local dy = targetRidePosition.y - playerPos.y
-			local worldAngle = math.deg(math.atan(dy, dx))
-			draw.Text(20, yOffset, string.format("World Direction Angle: %.1f°", worldAngle))
-			yOffset = yOffset + 20
-
-			-- Show player view angle for comparison
-			local _, viewYaw = activeSentry and entities.GetLocalPlayer() and entities.GetLocalPlayer():GetEyeAngles()
-				or { 0, 0 }
-			if viewYaw then
-				draw.Text(20, yOffset, string.format("Player View Yaw: %.1f°", viewYaw))
+			-- Additional debug text (only when ENABLE_DEBUG is true)
+			if ENABLE_DEBUG then
+				local yOffset = 260 -- Start below other text sections
+				local rideDistance = (playerPos - targetRidePosition):Length()
+				draw.Text(20, yOffset, string.format("Ride Position Distance: %.1f", rideDistance))
 				yOffset = yOffset + 20
 
-				local angleDiff = ((worldAngle - viewYaw + 180) % 360) - 180
-				draw.Text(20, yOffset, string.format("Angle Difference: %.1f°", angleDiff))
+				-- MOVEMENT DEBUG: Show exact direction calculations
+				local dx = targetRidePosition.x - playerPos.x
+				local dy = targetRidePosition.y - playerPos.y
+				local worldAngle = math.deg(math.atan(dy, dx))
+				draw.Text(20, yOffset, string.format("World Direction Angle: %.1f°", worldAngle))
+				yOffset = yOffset + 20
 			end
 		end
 	else
-		draw.Text(20, yOffset, "No active sentry")
+		-- Only show "No active sentry" when debugging
+		if ENABLE_DEBUG then
+			local yOffset = 80
+			draw.Text(20, yOffset, "No active sentry")
+		end
 	end
 end
 
@@ -1393,7 +1385,9 @@ callbacks.Unregister("Draw", "SentryRider_Draw")
 callbacks.Register("Draw", "SentryRider_Draw", OnDraw)
 
 client.Command('play "ui/buttonclick"', true)
-print("[SentryRider] Loaded successfully!")
+if ENABLE_DEBUG then
+	print("[SentryRider] Loaded successfully!")
+end
 
 --[[
     ONE-TICK PREDICTION
@@ -1437,4 +1431,24 @@ function IsPlayerDucking(p)
 		return false
 	end
 	return (flags & FL_DUCKING) ~= 0 -- Rule #22: use bitwise & constant
+end
+
+--[[ ============================================================================
+     DRAW.TEXT DEBUG WRAPPER
+     --------------------------------------------------------------------------
+     All on-screen textual diagnostics use draw.Text.  To ensure *every* existing
+     call respects ENABLE_DEBUG without having to wrap each invocation manually,
+     we monkey-patch the function once here.  When ENABLE_DEBUG is false the
+     wrapper becomes a no-op, so the HUD remains clean while arrows / boxes /
+     other visual aids (lines, circles, etc.) still render.
+============================================================================ ]]
+--
+
+do
+	local _drawText = draw.Text -- preserve original
+	function draw.Text(x, y, text)
+		if ENABLE_DEBUG then
+			_drawText(x, y, text)
+		end
+	end
 end
