@@ -41,6 +41,11 @@ local config = {
 -- CONSTANTS
 -------------------------------
 local IN_ATTACK = 1
+local STICKY_BASE_SPEED = 900
+local STICKY_MAX_SPEED = 2400
+local STICKY_UPWARD_VEL = 200
+local STICKY_GRAVITY = 800
+local DOWNWARD_SEARCH_STEPS = 24
 
 -------------------------------
 -- PROJECTILE CAMERA CONFIG
@@ -80,6 +85,16 @@ local projCamState = {
 	storedImpactPlane = nil,
 	storedFlagOffset = Vector3(0, 0, 0),
 	storedPolygonTexture = nil,
+
+	-- Unified Trajectory Cache
+	trajectory = {
+		positions = {},
+		velocities = {},
+		impactPos = nil,
+		impactPlane = nil,
+		flagOffset = Vector3(0, 0, 0),
+		isValid = false,
+	},
 }
 
 -------------------------------
@@ -102,11 +117,13 @@ local bombardAim = {
 	targetDistance = 500, -- Distance in units we want to hit
 	targetYaw = 0, -- Yaw offset from player view
 	scrollMode = 0, -- 0=position, 1=charge, 2=distance
-	minDistance = 0.1, -- Allow very close targets
+	minDistance = 10, -- Allow very close targets
 	maxDistance = 3000, -- Will be calculated dynamically
 	distanceStep = 50,
 	useHighArc = false, -- false = low arc (direct), true = high arc (lob)
 	calculatedPitch = -45,
+	targetPoint = nil,
+	originPoint = nil,
 	lastMouseX = 0,
 	lastMouseY = 0,
 	sensitivity = 1.0, -- Increased sensitivity
@@ -127,6 +144,33 @@ local function cross(a, b, c)
 	return (b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1])
 end
 
+local function findDownwardPitch(speed, targetDistance, gravity, upwardVel)
+	local minPitch = -89
+	local maxPitch = 0
+	local bestPitch = nil
+	local smallestDiff = math.huge
+
+	for _ = 1, DOWNWARD_SEARCH_STEPS do
+		local midPitch = 0.5 * (minPitch + maxPitch)
+		local midRange = calculateRange(speed, math.rad(-midPitch), gravity, upwardVel)
+		local rangeDiff = midRange - targetDistance
+
+		if rangeDiff > 0 then
+			maxPitch = midPitch
+		else
+			minPitch = midPitch
+		end
+
+		local absDiff = math.abs(rangeDiff)
+		if absDiff < smallestDiff then
+			smallestDiff = absDiff
+			bestPitch = midPitch
+		end
+	end
+
+	return bestPitch
+end
+
 local function clamp(val, minVal, maxVal)
 	if val < minVal then
 		return minVal
@@ -142,6 +186,7 @@ local STICKY_BASE_SPEED = 900
 local STICKY_MAX_SPEED = 2400
 local STICKY_UPWARD_VEL = 200
 local STICKY_GRAVITY = 800
+local DOWNWARD_SEARCH_STEPS = 24
 
 -- Calculate projectile range for given speed and pitch (in radians)
 local function calculateRange(speed, pitchRad, gravity, upwardVel)
@@ -447,7 +492,10 @@ local function drawProjCamWindow()
 		draw.Text(x + 5, y + 50, chargeText)
 
 		setColor(255, 255, 0, 255)
-		local pitchText = string.format("Pitch: %.1f°", bombardAim.calculatedPitch)
+		local pitchText = string.format(
+			"Pitch: %s",
+			bombardAim.calculatedPitch and string.format("%.1f°", bombardAim.calculatedPitch) or "N/A"
+		)
 		draw.Text(x + 5, y + 65, pitchText)
 
 		setColor(150, 255, 150, 255)
@@ -471,6 +519,36 @@ local function drawProjCamWindow()
 	for i, text in ipairs(controls) do
 		draw.Text(x + 5, y + h + 5 + (i - 1) * 14, text)
 	end
+end
+
+local function drawAimGuideMainView()
+	if not bombardAim.originPoint or not bombardAim.targetPoint then
+		return
+	end
+
+	local start2d = worldToScreen(bombardAim.originPoint)
+	local end2d = worldToScreen(bombardAim.targetPoint)
+	if not start2d or not end2d then
+		return
+	end
+
+	setColor(0, 255, 0, 255)
+	drawLine(math.floor(start2d[1]), math.floor(start2d[2]), math.floor(end2d[1]), math.floor(end2d[2]))
+end
+
+local function drawAimGuideCamera()
+	if not bombardAim.originPoint or not bombardAim.targetPoint then
+		return
+	end
+
+	local start2d = worldToScreen(bombardAim.originPoint)
+	local end2d = worldToScreen(bombardAim.targetPoint)
+	if not start2d or not end2d then
+		return
+	end
+
+	setColor(0, 255, 0, 255)
+	drawLine(math.floor(start2d[1]), math.floor(start2d[2]), math.floor(end2d[1]), math.floor(end2d[2]))
 end
 
 local function updateProjCamSmoothing()
@@ -510,13 +588,22 @@ local function renderProjCamView(view)
 		return
 	end
 
+	-- Configure for preview window
 	local savedOrigin = view.origin
 	local savedAngles = view.angles
 	local savedFov = view.fov
+	local savedX, savedY = view.x, view.y
+	local savedW, savedH = view.width, view.height
 
 	view.origin = projCamState.smoothedPos
 	view.angles = projCamState.smoothedAngles
 	view.fov = projCamConfig.fov
+
+	-- CRITICAL: Set viewport to match the render target size
+	view.x = 0
+	view.y = 0
+	view.width = projCamConfig.width
+	view.height = projCamConfig.height
 
 	render.Push3DView(view, E_ClearFlags.VIEW_CLEAR_COLOR | E_ClearFlags.VIEW_CLEAR_DEPTH, projCamState.texture)
 	render.ViewDrawScene(true, true, view)
@@ -525,40 +612,35 @@ local function renderProjCamView(view)
 	view.origin = savedOrigin
 	view.angles = savedAngles
 	view.fov = savedFov
+	view.x = savedX
+	view.y = savedY
+	view.width = savedW
+	view.height = savedH
 end
 
 local function projectToCamera(worldPos, camOrigin, camAngles, fov, winX, winY, winW, winH)
-	local diff = worldPos - camOrigin
-	local pitch = math.rad(camAngles.x)
-	local yaw = math.rad(camAngles.y)
-
-	local cosPitch = math.cos(pitch)
-	local sinPitch = math.sin(pitch)
-	local cosYaw = math.cos(yaw)
-	local sinYaw = math.sin(yaw)
-
-	local forward = Vector3(cosPitch * cosYaw, cosPitch * sinYaw, -sinPitch)
-	local right = Vector3(-sinYaw, cosYaw, 0)
-	local up = Vector3(sinPitch * cosYaw, sinPitch * sinYaw, cosPitch)
-
-	local dotForward = diff.x * forward.x + diff.y * forward.y + diff.z * forward.z
-	if dotForward <= 0 then
+	if not projCamState.lastView then
 		return nil
 	end
 
-	local dotRight = diff.x * right.x + diff.y * right.y + diff.z * right.z
-	local dotUp = diff.x * up.x + diff.y * up.y + diff.z * up.z
+	-- Create a temporary view setup for projection
+	-- We use a copy of the last captured view to ensure all engine flags are correct
+	local tempView = projCamState.lastView
+	tempView.origin = camOrigin
+	tempView.angles = camAngles
+	tempView.fov = fov
+	tempView.x = 0
+	tempView.y = 0
+	tempView.width = winW
+	tempView.height = winH
 
-	local tanHalfFov = math.tan(math.rad(fov * 0.5))
-	local aspect = winW / winH
+	local screenPos = client.WorldToScreen(worldPos, tempView)
+	if not screenPos then
+		return nil
+	end
 
-	local screenX = (dotRight / dotForward) / (tanHalfFov * aspect)
-	local screenY = (dotUp / dotForward) / tanHalfFov
-
-	local pixelX = winX + winW * 0.5 * (1 + screenX)
-	local pixelY = winY + winH * 0.5 * (1 - screenY)
-
-	return { pixelX, pixelY }
+	-- Offset by window position because the view was relative to the texture (0,0)
+	return { screenPos[1] + winX, screenPos[2] + winY }
 end
 
 -- Check if a point is within the camera window bounds
@@ -567,7 +649,7 @@ local function isInBounds(pos, winX, winY, winW, winH)
 end
 
 -- Draw an outlined line for better visibility.
-local function drawOutlinedLine(from, to, winX, winY, winW, winH)
+local function drawOutlinedLine(from, to)
 	setColor(config.outline.r, config.outline.g, config.outline.b, config.outline.a)
 	if math.abs(from[1] - to[1]) > math.abs(from[2] - to[2]) then
 		drawLine(math.floor(from[1]), math.floor(from[2] - 1), math.floor(to[1]), math.floor(to[2] - 1))
@@ -579,8 +661,8 @@ local function drawOutlinedLine(from, to, winX, winY, winW, winH)
 end
 
 local function drawProjCamTrajectory()
-	local positions = projCamState.storedPositions
-	if #positions < 2 then
+	local cache = projCamState.trajectory
+	if not cache.isValid then
 		return
 	end
 
@@ -591,18 +673,16 @@ local function drawProjCamTrajectory()
 	local winW, winH = projCamConfig.width, projCamConfig.height
 
 	local lastScreen = nil
-	for i = #positions, 1, -1 do
-		local worldPos = positions[i]
+	for i = #cache.positions, 1, -1 do
+		local worldPos = cache.positions[i]
 		local screenPos = projectToCamera(worldPos, camOrigin, camAngles, fov, winX, winY, winW, winH)
-		local flagScreenPos =
-			projectToCamera(worldPos + projCamState.storedFlagOffset, camOrigin, camAngles, fov, winX, winY, winW, winH)
 
 		if lastScreen and screenPos then
-			-- Only draw if both points are within bounds
-			if isInBounds(screenPos, winX, winY, winW, winH) or isInBounds(lastScreen, winX, winY, winW, winH) then
+			-- MANDATORY: Only draw if BOTH points are within window bounds.
+			if isInBounds(screenPos, winX, winY, winW, winH) and isInBounds(lastScreen, winX, winY, winW, winH) then
 				if config.line.enabled then
 					if config.outline.line_and_flags then
-						drawOutlinedLine(lastScreen, screenPos, winX, winY, winW, winH)
+						drawOutlinedLine(lastScreen, screenPos)
 					end
 					setColor(config.line.r, config.line.g, config.line.b, config.line.a)
 					drawLine(
@@ -612,9 +692,13 @@ local function drawProjCamTrajectory()
 						math.floor(screenPos[2])
 					)
 				end
-				if config.flags.enabled and flagScreenPos then
+
+				-- Also draw flags/upward markers if enabled
+				local flagScreenPos =
+					projectToCamera(worldPos + cache.flagOffset, camOrigin, camAngles, fov, winX, winY, winW, winH)
+				if config.flags.enabled and isInBounds(flagScreenPos, winX, winY, winW, winH) then
 					if config.outline.line_and_flags then
-						drawOutlinedLine(flagScreenPos, screenPos, winX, winY, winW, winH)
+						drawOutlinedLine(flagScreenPos, screenPos)
 					end
 					setColor(config.flags.r, config.flags.g, config.flags.b, config.flags.a)
 					drawLine(
@@ -629,14 +713,17 @@ local function drawProjCamTrajectory()
 		lastScreen = screenPos
 	end
 
-	if projCamState.storedImpactPos and projCamState.storedImpactPlane and config.polygon.enabled then
-		local origin = projCamState.storedImpactPos
-		local plane = projCamState.storedImpactPlane
+	-- Impact circle rendering in preview
+	if cache.impactPos and cache.impactPlane and config.polygon.enabled then
+		local origin = cache.impactPos
+		local plane = cache.impactPlane
 		local polygonPositions = {}
 		local radius = config.polygon.size
 		local segments = config.polygon.segments
 		local segAngleOffset = math.pi / segments
 		local segAngle = (math.pi / segments) * 2
+
+		local allIn = true
 
 		if math.abs(plane.z) >= 0.99 then
 			for i = 1, segments do
@@ -651,8 +738,9 @@ local function drawProjCamTrajectory()
 					winW,
 					winH
 				)
-				if not pos then
-					return
+				if not isInBounds(pos, winX, winY, winW, winH) then
+					allIn = false
+					break
 				end
 				polygonPositions[i] = pos
 			end
@@ -672,50 +760,20 @@ local function drawProjCamTrajectory()
 					winW,
 					winH
 				)
-				if not pos then
-					return
+				if not isInBounds(pos, winX, winY, winW, winH) then
+					allIn = false
+					break
 				end
 				polygonPositions[i] = pos
 			end
 		end
 
-		-- Filter polygon positions to only include those within bounds
-		local filteredPositions = {}
-		for i, pos in ipairs(polygonPositions) do
-			if isInBounds(pos, winX, winY, winW, winH) then
-				table.insert(filteredPositions, pos)
-			end
-		end
-
-		if #filteredPositions >= 2 and config.outline.polygon then
-			setColor(config.outline.r, config.outline.g, config.outline.b, config.outline.a)
-			local last = filteredPositions[#filteredPositions]
-			for i = 1, #filteredPositions do
-				local cur = filteredPositions[i]
-				drawLine(math.floor(last[1]), math.floor(last[2]), math.floor(cur[1]), math.floor(cur[2]))
-				last = cur
-			end
-		end
-
-		if #filteredPositions >= 3 then
+		-- Only draw the impact circle if 100% of it is bounded within the preview window
+		if allIn then
 			setColor(config.polygon.r, config.polygon.g, config.polygon.b, 255)
-			local pts, ptsReversed = {}, {}
-			local sum = 0
-			for i, pos in ipairs(filteredPositions) do
-				local pt = { pos[1], pos[2], 0, 0 }
-				pts[i] = pt
-				ptsReversed[#filteredPositions - i + 1] = pt
-				local nextPos = filteredPositions[(i % #filteredPositions) + 1]
-				sum = sum + cross(pos, nextPos, filteredPositions[1])
-			end
-			local polyPts = (sum < 0) and ptsReversed or pts
-			if texturedPolygon and projCamState.storedPolygonTexture then
-				texturedPolygon(projCamState.storedPolygonTexture, polyPts, true)
-			end
-
-			local last = filteredPositions[#filteredPositions]
-			for i = 1, #filteredPositions do
-				local cur = filteredPositions[i]
+			local last = polygonPositions[#polygonPositions]
+			for i = 1, #polygonPositions do
+				local cur = polygonPositions[i]
 				drawLine(math.floor(last[1]), math.floor(last[2]), math.floor(cur[1]), math.floor(cur[2]))
 				last = cur
 			end
@@ -724,7 +782,7 @@ local function drawProjCamTrajectory()
 end
 
 local function drawProjCamTexture()
-	if #projCamState.storedPositions < 2 then
+	if not projCamState.trajectory.isValid then
 		return
 	end
 
@@ -885,7 +943,7 @@ function PhysicsEnv:new()
 	end
 	env:SetGravity(Vector3(0, 0, -800))
 	env:SetAirDensity(2.0)
-	env:SetSimulationTimestep(1 / 66)
+	env:SetSimulationTimestep(globals.TickInterval() or (1 / 66))
 	self = setmetatable({
 		env = env,
 		objects = {},
@@ -1220,199 +1278,451 @@ local g_fTraceInterval = clamp(config.measure_segment_size, 0.5, 8) / 66
 local g_fFlagInterval = g_fTraceInterval * 1320
 
 -------------------------------
--- MAIN SIMULATION CALLBACK
+-- BOMBARDING AIM LOGIC
 -------------------------------
-callbacks.Register("CreateMove", "LoadPhysicsObjects", function()
-	callbacks.Unregister("CreateMove", "LoadPhysicsObjects")
-	physicsEnv:initializeObjects()
+local function ExecuteBombardingAim(cmd)
+	-- Always active when camera window is visible
+	if not projCamState.active then
+		return
+	end
 
-	callbacks.Register("Draw", function()
-		trajectoryLine:clear()
-		if engine.Con_IsVisible() or engine.IsGameUIVisible() then
-			return
+	local pLocal = entities.GetLocalPlayer()
+	if not pLocal or not pLocal:IsValid() or not pLocal:IsAlive() then
+		return
+	end
+
+	local pWeapon = pLocal:GetPropEntity("m_hActiveWeapon")
+	if not pWeapon or not pWeapon:IsValid() then
+		return
+	end
+
+	-- Get weapon type
+	local iItemDefinitionIndex = pWeapon:GetPropInt("m_iItemDefinitionIndex")
+	if not iItemDefinitionIndex then
+		return
+	end
+
+	-- Guard: Only work for projectile weapons (Primary/Secondary)
+	local projectileType = pWeapon:GetWeaponProjectileType()
+	if not projectileType or projectileType < 2 then
+		bombardAim.calculatedPitch = nil
+		projCamState.trajectory.isValid = false
+		return
+	end
+
+	local weaponType = ItemDefinitions[iItemDefinitionIndex] or 0
+
+	-- 1. Get accurate projectile info for current weapon state
+	local weaponID = pWeapon:GetWeaponID()
+	local iItemDef = pWeapon:GetPropInt("m_iItemDefinitionIndex")
+	local iCase = ItemDefinitions[iItemDef] or 0
+	local isDucking = (pLocal:GetPropInt("m_fFlags") & 2) ~= 0
+
+	local vOffset, fForwardVelocity, fUpwardVelocity, vCollisionMax, fGravity, fDrag =
+		GetProjectileInformation(pWeapon, isDucking, iCase, iItemDef, weaponID or 0, pLocal)
+
+	local baseSpeed = 900
+	local maxSpeed = 2400
+	if iCase == 4 or iCase == 5 or iCase == 6 then -- Grenades/Launchers
+		baseSpeed = fForwardVelocity
+		maxSpeed = fForwardVelocity
+	end
+
+	local hasCharge = (iCase == 1 or iCase == 3)
+	local gravity = fGravity > 0 and fGravity or STICKY_GRAVITY
+
+	-- 2. Calculate dynamic max distance
+	local maxRangeSpeed = hasCharge and maxSpeed or fForwardVelocity
+	bombardAim.maxDistance = (maxRangeSpeed * maxRangeSpeed) / gravity -- Basic estimate
+
+	-- 3. Simple point control logic
+	local mouseX = cmd.mousedx or 0
+	local mouseY = cmd.mousedy or 0
+
+	-- Mouse Y controls distance with fixed ratio (0.50 units per pixel)
+	if gui.GetValue("Menu") ~= 1 then
+		local distanceDelta = -mouseY * 0.50
+		bombardAim.targetDistance = clamp(bombardAim.targetDistance + distanceDelta, 0, bombardAim.maxDistance)
+	end
+
+	-- Get player's absolute position
+	local absOrigin = pLocal:GetAbsOrigin()
+	local viewAngles = engine.GetViewAngles()
+	if not absOrigin or not viewAngles then
+		return
+	end
+
+	-- 4. Calculate accurate start position
+	local viewOffset = pLocal:GetPropVector("localdata", "m_vecViewOffset[0]")
+	local vHeadPos = absOrigin + viewOffset
+
+	-- Account for weapon offset as simulation does
+	local vStartPos = vHeadPos
+		+ (viewAngles:Forward() * vOffset.x)
+		+ (viewAngles:Right() * (vOffset.y * (pWeapon:IsViewModelFlipped() and -1 or 1)))
+		+ (viewAngles:Up() * vOffset.z)
+
+	bombardAim.originPoint = vStartPos
+
+	-- 5. Set target point at calculated distance on the yaw line
+	local yawRad = math.rad(viewAngles.y)
+	local direction = Vector3(math.cos(yawRad), math.sin(yawRad), 0)
+
+	local targetZ = 0
+	if projCamState.trajectory.isValid and projCamState.trajectory.impactPos then
+		targetZ = projCamState.trajectory.impactPos.z - vStartPos.z
+	end
+
+	bombardAim.targetPoint = vStartPos + (direction * bombardAim.targetDistance) + Vector3(0, 0, targetZ)
+
+	-- 6. Precise Ballistic Solver (accounts for upward boost)
+	local dx = bombardAim.targetDistance
+	local dy = targetZ
+
+	local function checkSolution(speed, pitch)
+		local ang = EulerAngles(pitch, viewAngles.y, 0)
+		local vVel = (ang:Forward() * speed) + (ang:Up() * fUpwardVelocity)
+
+		-- Use basic kinematics for high performance solver
+		-- dy = v_z * t - 0.5 * g * t^2
+		-- dx = v_x * t
+		local vx = math.sqrt(vVel.x * vVel.x + vVel.y * vVel.y)
+		local vz = vVel.z
+
+		if vx < 1 then
+			return -999999
+		end
+		local t = dx / vx
+		return (vz * t) - (0.5 * gravity * t * t)
+	end
+
+	local function findPitchForArc(speed, isHighArc)
+		-- Search range based on arc preference
+		local lowP, highP = (isHighArc and -89 or -45), (isHighArc and -45 or 89)
+		local bestP = nil
+
+		for i = 1, 15 do
+			local mid = (lowP + highP) / 2
+			local hitZ = checkSolution(speed, mid)
+
+			if isHighArc then
+				-- High Arc: aim more UP (-89) to hit shorter/lower at dx
+				if hitZ > dy then
+					highP = mid
+				else
+					lowP = mid
+				end
+			else
+				-- Low Arc: aim more DOWN (89) to hit shorter/lower at dx
+				if hitZ > dy then
+					lowP = mid
+				else
+					highP = mid
+				end
+			end
+			bestP = mid
 		end
 
-		local pLocal = entities.GetLocalPlayer()
-		if not pLocal or pLocal:InCond(7) or not pLocal:IsAlive() then
-			return
+		-- Final validation
+		local finalZ = checkSolution(speed, bestP)
+		if math.abs(finalZ - dy) < 100 then
+			return bestP
+		end
+		return nil
+	end
+
+	if hasCharge then
+		local bestCharge, bestPitch = nil, nil
+
+		-- Try both arcs and find the lowest charge required
+		for _, isHigh in ipairs({ bombardAim.useHighArc, not bombardAim.useHighArc }) do
+			local maxC, minC = 1.0, 0.0
+			for i = 1, 15 do
+				local mid = (maxC + minC) / 2
+				local speed = baseSpeed + mid * (maxSpeed - baseSpeed)
+				local pitch = findPitchForArc(speed, isHigh)
+				if pitch then
+					bestCharge, bestPitch = mid, pitch
+					maxC = mid
+				else
+					minC = mid
+				end
+			end
+			if bestPitch then
+				break
+			end
 		end
 
-		local pWeapon = pLocal:GetPropEntity("m_hActiveWeapon")
-		if not pWeapon then
-			return
+		bombardMode.chargeLevel = bestCharge or 1.0
+		bombardAim.calculatedPitch = bestPitch
+	else
+		-- Try preferred arc, fallback to other
+		local pitch = findPitchForArc(baseSpeed, bombardAim.useHighArc)
+		if not pitch then
+			pitch = findPitchForArc(baseSpeed, not bombardAim.useHighArc)
 		end
+		bombardAim.calculatedPitch = pitch
+		bombardMode.chargeLevel = 0
+	end
 
-		local projectileType = pWeapon:GetWeaponProjectileType()
-		if not projectileType or projectileType < 2 then
-			return
-		end
+	if bombardAim.calculatedPitch then
+		cmd.mousedx = 0
+		cmd.mousedy = 0
 
-		local iItemDefinitionIndex = pWeapon:GetPropInt("m_iItemDefinitionIndex")
-		if not iItemDefinitionIndex then
-			return
-		end
-		local iItemDefinitionType = ItemDefinitions[iItemDefinitionIndex] or 0
-		if iItemDefinitionType == 0 then
-			return
-		end
+		local aimAngles = EulerAngles(bombardAim.calculatedPitch, viewAngles.y, 0)
+		engine.SetViewAngles(aimAngles)
+		cmd.viewangles = Vector3(bombardAim.calculatedPitch, viewAngles.y, 0)
 
-		local weaponID = pWeapon:GetWeaponID()
-		if not weaponID then
-			return
-		end
+		bombardMode.useStoredCharge = hasCharge
+	else
+		bombardAim.originPoint = nil
+		bombardAim.targetPoint = nil
+	end
+end
 
-		local vOffset, fForwardVelocity, fUpwardVelocity, vCollisionMax, fGravity, fDrag = GetProjectileInformation(
-			pWeapon,
-			(pLocal:GetPropInt("m_fFlags") & FL_DUCKING) == 2,
-			iItemDefinitionType,
-			iItemDefinitionIndex,
-			weaponID,
-			pLocal
-		)
-		local vCollisionMin = -vCollisionMax
+----------------------------------------
+-- UNIFIED PROJECTILE SIMULATION
+----------------------------------------
+local function UpdateProjectileSimulation(cmd)
+	local cache = projCamState.trajectory
 
-		local vStartPosition = pLocal:GetAbsOrigin() + pLocal:GetPropVector("localdata", "m_vecViewOffset[0]")
-		local vStartAngle = engine.GetViewAngles()
+	-- Clear previous cache
+	cache.positions = {}
+	cache.velocities = {}
+	cache.impactPos = nil
+	cache.impactPlane = nil
+	cache.isValid = false
 
-		local results = traceHull(
+	local pLocal = entities.GetLocalPlayer()
+	if not pLocal or not pLocal:IsValid() or pLocal:InCond(7) or not pLocal:IsAlive() then
+		return
+	end
+
+	local pWeapon = pLocal:GetPropEntity("m_hActiveWeapon")
+	if not pWeapon or not pWeapon:IsValid() then
+		return
+	end
+
+	local projectileType = pWeapon:GetWeaponProjectileType()
+	if not projectileType or projectileType < 2 then
+		return
+	end
+
+	local iItemDefinitionIndex = pWeapon:GetPropInt("m_iItemDefinitionIndex")
+	if not iItemDefinitionIndex then
+		return
+	end
+	local iItemDefinitionType = ItemDefinitions[iItemDefinitionIndex] or 0
+	if iItemDefinitionType == 0 then
+		return
+	end
+
+	local weaponID = pWeapon:GetWeaponID()
+	if not weaponID then
+		return
+	end
+
+	local vOffset, fForwardVelocity, fUpwardVelocity, vCollisionMax, fGravity, fDrag = GetProjectileInformation(
+		pWeapon,
+		(pLocal:GetPropInt("m_fFlags") & FL_DUCKING) == 2,
+		iItemDefinitionType,
+		iItemDefinitionIndex,
+		weaponID,
+		pLocal
+	)
+	local vCollisionMin = -vCollisionMax
+
+	-- CRITICAL: Always use physics origin and command view angles
+	local vStartPosition = pLocal:GetAbsOrigin() + pLocal:GetPropVector("localdata", "m_vecViewOffset[0]")
+	local vStartAngle = cmd and EulerAngles(cmd.viewangles.x, cmd.viewangles.y, cmd.viewangles.z)
+		or engine.GetViewAngles()
+
+	local results = traceHull(
+		vStartPosition,
+		vStartPosition
+			+ (vStartAngle:Forward() * vOffset.x)
+			+ (vStartAngle:Right() * (vOffset.y * (pWeapon:IsViewModelFlipped() and -1 or 1)))
+			+ (vStartAngle:Up() * vOffset.z),
+		vCollisionMin,
+		vCollisionMax,
+		100679691
+	)
+	if results.fraction ~= 1 then
+		return
+	end
+	vStartPosition = results.endpos
+
+	if
+		iItemDefinitionType == -1
+		or ((iItemDefinitionType >= 7 and iItemDefinitionType < 11) and fForwardVelocity ~= 0)
+	then
+		local res = traceLine(results.startpos, results.startpos + (vStartAngle:Forward() * 2000), 100679691)
+		vStartAngle = (
+			((res.fraction <= 0.1) and (results.startpos + (vStartAngle:Forward() * 2000)) or res.endpos)
+			- vStartPosition
+		):Angles()
+	end
+
+	local vVelocity = (vStartAngle:Forward() * fForwardVelocity) + (vStartAngle:Up() * fUpwardVelocity)
+	cache.flagOffset = vStartAngle:Right() * -config.flags.size
+
+	table.insert(cache.positions, vStartPosition)
+	table.insert(cache.velocities, vVelocity)
+
+	if iItemDefinitionType == -1 then
+		results = traceHull(
 			vStartPosition,
-			vStartPosition
-				+ (vStartAngle:Forward() * vOffset.x)
-				+ (vStartAngle:Right() * (vOffset.y * (pWeapon:IsViewModelFlipped() and -1 or 1)))
-				+ (vStartAngle:Up() * vOffset.z),
+			vStartPosition + (vStartAngle:Forward() * 10000),
 			vCollisionMin,
 			vCollisionMax,
 			100679691
 		)
-		if results.fraction ~= 1 then
+		if results.startsolid then
 			return
 		end
-		vStartPosition = results.endpos
-
-		-- Adjust view angle for rockets and for some projectiles if needed.
-		if
-			iItemDefinitionType == -1
-			or ((iItemDefinitionType >= 7 and iItemDefinitionType < 11) and fForwardVelocity ~= 0)
-		then
-			local res = traceLine(results.startpos, results.startpos + (vStartAngle:Forward() * 2000), 100679691)
-			vStartAngle = (
-				((res.fraction <= 0.1) and (results.startpos + (vStartAngle:Forward() * 2000)) or res.endpos)
-				- vStartPosition
-			):Angles()
+		local segCount = math.floor((results.endpos - results.startpos):Length() / g_fFlagInterval)
+		local vForward = vStartAngle:Forward()
+		for i = 1, segCount do
+			local segPos = vForward * (i * g_fFlagInterval) + vStartPosition
+			table.insert(cache.positions, segPos)
+			table.insert(cache.velocities, vVelocity)
 		end
+		table.insert(cache.positions, results.endpos)
+		table.insert(cache.velocities, vVelocity)
+	elseif iItemDefinitionType > 3 then
+		local vPos = Vector3(0, 0, 0)
+		for i = 0.01515, 5, g_fTraceInterval do
+			local scalar = (fDrag == nil) and i or ((1 - math.exp(-fDrag * i)) / fDrag)
+			vPos.x = vVelocity.x * scalar + vStartPosition.x
+			vPos.y = vVelocity.y * scalar + vStartPosition.y
+			vPos.z = (vVelocity.z - fGravity * i) * scalar + vStartPosition.z
 
-		local vVelocity = (vStartAngle:Forward() * fForwardVelocity) + (vStartAngle:Up() * fUpwardVelocity)
-		trajectoryLine.flagOffset = vStartAngle:Right() * -config.flags.size
-		projCamState.storedFlagOffset = trajectoryLine.flagOffset
-		trajectoryLine:insert(vStartPosition)
-
-		projCamState.storedPositions = {}
-		projCamState.storedVelocities = {}
-		table.insert(projCamState.storedPositions, vStartPosition)
-		table.insert(projCamState.storedVelocities, vVelocity)
-
-		if iItemDefinitionType == -1 then
-			results = traceHull(
-				vStartPosition,
-				vStartPosition + (vStartAngle:Forward() * 10000),
-				vCollisionMin,
-				vCollisionMax,
-				100679691
-			)
-			if results.startsolid then
-				return
+			local vCurVel = Vector3(vVelocity.x, vVelocity.y, vVelocity.z - fGravity * i)
+			if fDrag then
+				local dragFactor = math.exp(-fDrag * i)
+				vCurVel = Vector3(vCurVel.x * dragFactor, vCurVel.y * dragFactor, vCurVel.z * dragFactor)
 			end
-			local segCount = math.floor((results.endpos - results.startpos):Length() / g_fFlagInterval)
-			local vForward = vStartAngle:Forward()
-			for i = 1, segCount do
-				local segPos = vForward * (i * g_fFlagInterval) + vStartPosition
-				trajectoryLine:insert(segPos)
-				table.insert(projCamState.storedPositions, segPos)
-				table.insert(projCamState.storedVelocities, vVelocity)
+
+			if vCollisionMax.x ~= 0 then
+				results = traceHull(results.endpos, vPos, vCollisionMin, vCollisionMax, 100679691)
+			else
+				results = traceLine(results.endpos, vPos, 100679691)
 			end
-			trajectoryLine:insert(results.endpos)
-			table.insert(projCamState.storedPositions, results.endpos)
-			table.insert(projCamState.storedVelocities, vVelocity)
-		elseif iItemDefinitionType > 3 then
-			local vPos = Vector3(0, 0, 0)
-			for i = 0.01515, 5, g_fTraceInterval do
-				local scalar = (fDrag == nil) and i or ((1 - math.exp(-fDrag * i)) / fDrag)
-				vPos.x = vVelocity.x * scalar + vStartPosition.x
-				vPos.y = vVelocity.y * scalar + vStartPosition.y
-				vPos.z = (vVelocity.z - fGravity * i) * scalar + vStartPosition.z
-
-				local vCurVel = Vector3(vVelocity.x, vVelocity.y, vVelocity.z - fGravity * i)
-				if fDrag then
-					local dragFactor = math.exp(-fDrag * i)
-					vCurVel = Vector3(vCurVel.x * dragFactor, vCurVel.y * dragFactor, vCurVel.z * dragFactor)
-				end
-
-				-- Use hull trace if collision hull is nonzero.
-				if vCollisionMax.x ~= 0 then
-					results = traceHull(results.endpos, vPos, vCollisionMin, vCollisionMax, 100679691)
-				else
-					results = traceLine(vStartPosition, vStartPosition + (vStartAngle:Forward() * 10000), 100679691)
-				end
-				trajectoryLine:insert(results.endpos)
-				table.insert(projCamState.storedPositions, results.endpos)
-				table.insert(projCamState.storedVelocities, vCurVel)
-				if results.fraction ~= 1 then
-					break
-				end
+			table.insert(cache.positions, results.endpos)
+			table.insert(cache.velocities, vCurVel)
+			if results.fraction ~= 1 then
+				break
 			end
-		else
-			local obj = physicsEnv:getObject(iItemDefinitionType)
-			obj:SetPosition(vStartPosition, vStartAngle, true)
-			obj:SetVelocity(vVelocity, Vector3(0, 0, 0))
-			local prevPos = vStartPosition
-			for i = 2, 330 do
-				local curPos = obj:GetPosition()
-				if not curPos then
-					error("Physics object position is nil")
-				end
-				results = traceHull(results.endpos, curPos, vCollisionMin, vCollisionMax, 100679691)
-				if not results then
-					error("TraceHull returned nil in physics simulation")
-				end
-				trajectoryLine:insert(results.endpos)
-
-				local deltaPos = curPos - prevPos
-				table.insert(projCamState.storedPositions, results.endpos)
-				table.insert(projCamState.storedVelocities, deltaPos * 66)
-				prevPos = curPos
-
-				if results.fraction ~= 1 then
-					break
-				end
-				physicsEnv:simulate(g_fTraceInterval)
+		end
+	else
+		local obj = physicsEnv:getObject(iItemDefinitionType)
+		obj:SetPosition(vStartPosition, vStartAngle, true)
+		obj:SetVelocity(vVelocity, Vector3(0, 0, 0))
+		local prevPos = vStartPosition
+		for i = 2, 330 do
+			local curPos = obj:GetPosition()
+			if not curPos then
+				break
 			end
-			physicsEnv:reset()
-		end
+			results = traceHull(results.endpos, curPos, vCollisionMin, vCollisionMax, 100679691)
 
-		if #trajectoryLine.positions == 0 then
-			return
-		end
-		if results and results.plane then
-			projCamState.storedImpactPos = results.endpos
-			projCamState.storedImpactPlane = results.plane
-			impactPolygon:draw(results.plane, results.endpos)
-		else
-			projCamState.storedImpactPos = nil
-			projCamState.storedImpactPlane = nil
-		end
-		if #trajectoryLine.positions > 1 then
-			trajectoryLine:render()
-		end
+			local deltaPos = curPos - prevPos
+			table.insert(cache.positions, results.endpos)
+			table.insert(cache.velocities, deltaPos * 66)
+			prevPos = curPos
 
+			if results.fraction ~= 1 then
+				break
+			end
+			physicsEnv:simulate(g_fTraceInterval)
+		end
+		physicsEnv:reset()
+	end
+
+	if results and results.plane then
+		cache.impactPos = results.endpos
+		cache.impactPlane = results.plane
+	end
+	cache.isValid = #cache.positions > 1
+
+	-- Sync to legacy state for compatibility with UI rendering
+	projCamState.storedPositions = cache.positions
+	projCamState.storedVelocities = cache.velocities
+	projCamState.storedImpactPos = cache.impactPos
+	projCamState.storedImpactPlane = cache.impactPlane
+	projCamState.storedFlagOffset = cache.flagOffset
+end
+
+callbacks.Register("CreateMove", "LoadPhysicsObjects", function()
+	callbacks.Unregister("CreateMove", "LoadPhysicsObjects")
+	physicsEnv:initializeObjects()
+
+	callbacks.Register("CreateMove", "ArtilleryLogic", function(cmd)
+		-- 1. Handle Input Toggles
 		handleProjCamToggle()
 		handleBombardModeToggle()
 		handleBombardAimToggle()
 
-		if isProjCamActive() then
+		-- 2. Run Aiming Logic (sets view angles)
+		ExecuteBombardingAim(cmd)
+
+		-- 3. Run Simulation & Refresh Cache
+		UpdateProjectileSimulation(cmd)
+
+		-- 4. Handle Preview Window Input
+		if projCamState.active then
 			handleProjCamInput()
 			updateProjCamSmoothing()
+		end
+	end)
+
+	callbacks.Register("Draw", "ArtilleryDraw", function()
+		if engine.Con_IsVisible() or engine.IsGameUIVisible() then
+			return
+		end
+
+		local cache = projCamState.trajectory
+		if not cache.isValid then
+			return
+		end
+
+		-- Draw Impact Polygon
+		if cache.impactPlane and cache.impactPos then
+			impactPolygon:draw(cache.impactPlane, cache.impactPos)
+		end
+
+		-- Draw World Trajectory
+		local num = #cache.positions
+		local lastScreen = nil
+		for i = num, 1, -1 do
+			local worldPos = cache.positions[i]
+			local screenPos = worldToScreen(worldPos)
+			local flagScreenPos = worldToScreen(worldPos + cache.flagOffset)
+			if lastScreen and screenPos then
+				if config.line.enabled then
+					if config.outline.line_and_flags then
+						drawOutlinedLine(lastScreen, screenPos)
+					end
+					setColor(config.line.r, config.line.g, config.line.b, config.line.a)
+					drawLine(lastScreen[1], lastScreen[2], screenPos[1], screenPos[2])
+				end
+				if config.flags.enabled and flagScreenPos then
+					if config.outline.line_and_flags then
+						drawOutlinedLine(flagScreenPos, screenPos)
+					end
+					setColor(config.flags.r, config.flags.g, config.flags.b, config.flags.a)
+					drawLine(flagScreenPos[1], flagScreenPos[2], screenPos[1], screenPos[2])
+				end
+			end
+			lastScreen = screenPos
+		end
+
+		-- drawAimGuideMainView()
+
+		if isProjCamActive() then
 			drawProjCamTexture()
 			drawProjCamWindow()
+			-- drawAimGuideCamera()
 		end
 	end)
 end)
@@ -1432,6 +1742,16 @@ callbacks.Register("DoPostScreenSpaceEffects", "ProjCamRender", function()
 	end
 
 	if not isProjCamActive() then
+		return
+	end
+
+	local pLocal = entities.GetLocalPlayer()
+	if not pLocal or not pLocal:IsValid() or not pLocal:IsAlive() then
+		return
+	end
+
+	local pWeapon = pLocal:GetPropEntity("m_hActiveWeapon")
+	if not pWeapon or not pWeapon:IsValid() or pWeapon:GetWeaponProjectileType() < 2 then
 		return
 	end
 
@@ -1455,12 +1775,12 @@ callbacks.Register("CreateMove", "StickySpamFire", function(cmd)
 	end
 
 	local pLocal = entities.GetLocalPlayer()
-	if not pLocal or not pLocal:IsAlive() then
+	if not pLocal or not pLocal:IsValid() or not pLocal:IsAlive() then
 		return
 	end
 
 	local pWeapon = pLocal:GetPropEntity("m_hActiveWeapon")
-	if not pWeapon then
+	if not pWeapon or not pWeapon:IsValid() then
 		return
 	end
 
@@ -1490,171 +1810,6 @@ callbacks.Register("CreateMove", "StickySpamFire", function(cmd)
 	-- When current charge reaches target, release attack to fire the sticky
 	if currentCharge >= targetCharge and chargeBeginTime > 0 then
 		cmd.buttons = cmd.buttons & ~IN_ATTACK
-	end
-end)
-
--------------------------------
--- BOMBARDING AIM LOGIC
--------------------------------
-callbacks.Register("CreateMove", "BombardingAim", function(cmd)
-	-- Always active when camera window is visible
-	if not projCamState.active then
-		return
-	end
-
-	local pLocal = entities.GetLocalPlayer()
-	if not pLocal or not pLocal:IsAlive() then
-		return
-	end
-
-	local pWeapon = pLocal:GetPropEntity("m_hActiveWeapon")
-	if not pWeapon then
-		return
-	end
-
-	-- Get weapon type
-	local iItemDefinitionIndex = pWeapon:GetPropInt("m_iItemDefinitionIndex")
-	if not iItemDefinitionIndex then
-		return
-	end
-	local weaponType = ItemDefinitions[iItemDefinitionIndex] or 0
-
-	-- Determine if weapon has charge (sticky launchers = type 1, 3)
-	local hasCharge = (weaponType == 1 or weaponType == 3)
-	local baseSpeed = STICKY_BASE_SPEED
-	local maxSpeed = STICKY_MAX_SPEED
-	local upwardVel = STICKY_UPWARD_VEL
-	local g = STICKY_GRAVITY
-
-	-- For non-charge weapons, use fixed speed
-	if not hasCharge then
-		baseSpeed = maxSpeed
-	end
-
-	-- Mouse input like WoT artillery
-	local mouseX = cmd.mousedx or 0
-	local mouseY = cmd.mousedy or 0
-
-	-- Calculate max range based on max speed
-	local maxRangeSpeed = hasCharge and maxSpeed or baseSpeed
-	bombardAim.maxDistance = (maxRangeSpeed * maxRangeSpeed) / g
-
-	-- Mouse Y moves target point, Mouse X rotates yaw
-	bombardAim.targetDistance = clamp(
-		bombardAim.targetDistance - mouseY * bombardAim.sensitivity,
-		bombardAim.minDistance,
-		bombardAim.maxDistance
-	)
-	bombardAim.targetYaw = bombardAim.targetYaw - mouseX * 0.05
-
-	local d = bombardAim.targetDistance
-	local bestCharge = 0
-	local bestPitch = nil
-	local bestError = 999999
-
-	if hasCharge then
-		-- Binary search for optimal charge
-		local minCharge = 0
-		local maxCharge = 1.0
-		local iterations = 20
-
-		for i = 1, iterations do
-			local midCharge = (minCharge + maxCharge) / 2
-			local speed = baseSpeed + midCharge * (maxSpeed - baseSpeed)
-			local v2 = speed * speed
-
-			-- No artificial pitch limits - let mathematics handle all cases
-
-			local inner = v2 * v2 - g * g * d * d
-
-			if inner >= 0 then
-				local sqrtInner = math.sqrt(inner)
-
-				-- Safety check for division by zero (allow very close targets)
-				if math.abs(g * d) < 0.00001 then
-					-- For extremely close targets, use steep downward angle
-					local steepPitch = -89
-					bestPitch = steepPitch
-					bestCharge = midCharge
-					break
-				end
-
-				local tanLow = (v2 - sqrtInner) / (g * d)
-				local tanHigh = (v2 + sqrtInner) / (g * d)
-				local pitchLow = -math.deg(math.atan(tanLow))
-				local pitchHigh = -math.deg(math.atan(tanHigh))
-
-				local pitch, actualRange, error
-				if bombardAim.useHighArc then
-					pitch = pitchHigh
-					local pitchRadHigh = math.rad(-pitchHigh)
-					actualRange = calculateRange(speed, pitchRadHigh, g, upwardVel)
-					error = math.abs(actualRange - d)
-				else
-					pitch = pitchLow
-					local pitchRadLow = math.rad(-pitchLow)
-					actualRange = calculateRange(speed, pitchRadLow, g, upwardVel)
-					error = math.abs(actualRange - d)
-				end
-
-				if error < bestError then
-					bestError = error
-					bestCharge = midCharge
-					bestPitch = pitch
-				end
-
-				if actualRange < d then
-					minCharge = midCharge
-				else
-					maxCharge = midCharge
-				end
-			else
-				minCharge = midCharge
-			end
-		end
-	else
-		-- No charge weapon - calculate pitch directly
-		local speed = baseSpeed
-		local v2 = speed * speed
-		local inner = v2 * v2 - g * g * d * d
-
-		if inner >= 0 then
-			local sqrtInner = math.sqrt(inner)
-
-			-- Safety check for division by zero (allow very close targets)
-			if math.abs(g * d) < 0.00001 then
-				-- For extremely close targets, use steep downward angle
-				bestPitch = -89
-			else
-				local tanLow = (v2 - sqrtInner) / (g * d)
-				local tanHigh = (v2 + sqrtInner) / (g * d)
-				local pitchLow = -math.deg(math.atan(tanLow))
-				local pitchHigh = -math.deg(math.atan(tanHigh))
-
-				if bombardAim.useHighArc then
-					bestPitch = pitchHigh
-				else
-					bestPitch = pitchLow
-				end
-			end
-			bestCharge = 0
-		end
-	end
-
-	if bestPitch then
-		bombardMode.chargeLevel = bestCharge
-		bombardAim.calculatedPitch = bestPitch
-
-		-- Zero mouse so we fully control view
-		cmd.mousedx = 0
-		cmd.mousedy = 0
-
-		-- Set view - allow full pitch range for shooting down
-		local aimAngles = EulerAngles(bombardAim.calculatedPitch, bombardAim.targetYaw, 0)
-		engine.SetViewAngles(aimAngles)
-		cmd.viewangles = Vector3(bombardAim.calculatedPitch, bombardAim.targetYaw, 0)
-
-		bombardMode.useStoredCharge = hasCharge
 	end
 end)
 
