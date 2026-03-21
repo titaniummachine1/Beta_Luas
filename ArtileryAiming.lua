@@ -67,7 +67,7 @@ local projCamConfig = {
 	scrollStep = 0.01,
 	interpSpeed = 0.15,
 	fov = 90,
-	toggle = true,
+	toggle = false,
 }
 logStep("projCamConfig done")
 
@@ -276,19 +276,26 @@ end
 
 local function handleProjCamToggle()
 	local keyDown = input.IsButtonDown(projCamConfig.key)
-	if projCamConfig.toggle then
-		if keyDown and not projCamState.lastKeyState then
-			local wasActive = projCamState.active
-			projCamState.active = not projCamState.active
-			-- Reset to using actual charge when window is toggled off
-			if wasActive and not projCamState.active then
-				bombardMode.useStoredCharge = false
-			end
-		end
-		projCamState.lastKeyState = keyDown
-	else
-		projCamState.active = keyDown
+	local wasActive = projCamState.active
+	projCamState.active = keyDown
+	if wasActive and not projCamState.active then
+		bombardMode.useStoredCharge = false
 	end
+end
+
+local function suppressWeaponSwitchOnScroll(cmd)
+	if not projCamState.active then
+		return
+	end
+
+	local scrolledUp = input.IsButtonPressed(MOUSE_WHEEL_UP)
+	local scrolledDown = input.IsButtonPressed(MOUSE_WHEEL_DOWN)
+	if not scrolledUp and not scrolledDown then
+		return
+	end
+
+	cmd.weaponselect = 0
+	cmd.weaponsubtype = 0
 end
 
 local function handleBombardModeToggle()
@@ -1671,6 +1678,7 @@ local function onCreateMoveInner(cmd)
 
 	if projCamState.active then
 		handleProjCamInput()
+		suppressWeaponSwitchOnScroll(cmd)
 		updateProjCamSmoothing()
 	end
 
@@ -1722,43 +1730,44 @@ local function onDrawInner()
 		return
 	end
 
-	if not isProjectileWeapon() then
-		return
-	end
+	if isProjectileWeapon() then
+		local cache = projCamState.trajectory
 
-	local cache = projCamState.trajectory
-
-	if cache.impactPlane and cache.impactPos then
-		ensureImpactPolygon()(cache.impactPlane, cache.impactPos)
-	end
-
-	local num = #cache.positions
-	local lastScreen = nil
-	for i = num, 1, -1 do
-		local worldPos = cache.positions[i]
-		local screenPos = worldToScreen(worldPos)
-		local flagScreenPos = worldToScreen(worldPos + cache.flagOffset)
-		if lastScreen and screenPos then
-			if config.line.enabled then
-				if config.outline.line_and_flags then
-					drawOutlinedLine(lastScreen, screenPos)
-				end
-				setColor(config.line.r, config.line.g, config.line.b, config.line.a)
-				drawLine(lastScreen[1], lastScreen[2], screenPos[1], screenPos[2])
-			end
-			if config.flags.enabled and flagScreenPos then
-				if config.outline.line_and_flags then
-					drawOutlinedLine(flagScreenPos, screenPos)
-				end
-				setColor(config.flags.r, config.flags.g, config.flags.b, config.flags.a)
-				drawLine(flagScreenPos[1], flagScreenPos[2], screenPos[1], screenPos[2])
-			end
+		if cache.impactPlane and cache.impactPos then
+			ensureImpactPolygon()(cache.impactPlane, cache.impactPos)
 		end
-		lastScreen = screenPos
+
+		local num = #cache.positions
+		local lastScreen = nil
+		for i = num, 1, -1 do
+			local worldPos = cache.positions[i]
+			local screenPos = worldToScreen(worldPos)
+			local flagScreenPos = worldToScreen(worldPos + cache.flagOffset)
+			if lastScreen and screenPos then
+				if config.line.enabled then
+					if config.outline.line_and_flags then
+						drawOutlinedLine(lastScreen, screenPos)
+					end
+					setColor(config.line.r, config.line.g, config.line.b, config.line.a)
+					drawLine(lastScreen[1], lastScreen[2], screenPos[1], screenPos[2])
+				end
+				if config.flags.enabled and flagScreenPos then
+					if config.outline.line_and_flags then
+						drawOutlinedLine(flagScreenPos, screenPos)
+					end
+					setColor(config.flags.r, config.flags.g, config.flags.b, config.flags.a)
+					drawLine(flagScreenPos[1], flagScreenPos[2], screenPos[1], screenPos[2])
+				end
+			end
+			lastScreen = screenPos
+		end
 	end
 
 	if isProjCamActive() then
 		drawProjCamTexture()
+	end
+
+	if projCamState.active then
 		drawProjCamWindow()
 	end
 end
